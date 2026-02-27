@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+@theme {
+  --color-app-bg: var(--bg);
+  --color-app-surface: var(--surface);
+  --color-app-border: var(--border);
+  --color-app-text: var(--text);
+  --color-app-muted: var(--muted);
+  --color-app-accent: #D4AF37;
+  --color-app-accentHover: #B5952F;
+  --color-app-danger: #DC2626;
+  --color-app-success: #16A34A;
+
+  --font-sans: "Inter", "system-ui", "sans-serif";
+}
+
+:root {
+  /* Dark Theme (Default) */
+  --bg: #0a0a0b;
+  --surface: #121214;
+  --surface-low: #0a0a0b;
+  --surface-high: #1c1c1f;
+  --border: #1f1f23;
+  --text: #f4f4f5;
+  --text-dim: #a1a1aa;
+  --muted: #71717a;
+  --highlight: #3b82f6;
+  --row-even: #121214;
+  --row-odd: #18181b;
+}
+
+:root.light {
+  /* Light Theme - Clean, Premium High Contrast */
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --surface-low: #f1f5f9;
+  --surface-high: #ffffff;
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --text-dim: #475569;
+  --muted: #94a3b8;
+  --highlight: #2563eb;
+  --row-even: #ffffff;
+  --row-odd: #f8fafc;
+}
+
+@layer base {
+  body {
+    @apply bg-app-bg text-app-text font-sans antialiased min-h-screen selection:bg-app-accent selection:text-app-bg transition-colors duration-200;
+  }
+}
+
+/* Custom Scrollbar */
+.custom-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.custom-scroll::-webkit-scrollbar-track {
+  @apply bg-app-surface;
+}
+
+.custom-scroll::-webkit-scrollbar-thumb {
+  @apply bg-app-border rounded;
+}
+
+.custom-scroll::-webkit-scrollbar-thumb:hover {
+  @apply bg-app-muted;
+}
+
+/* Grid Layout for Desktop Density */
+.ingredient-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1rem;
+}
+
+@media (min-width: 1024px) {
+  .ingredient-grid.dense {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 1280px) {
+  .ingredient-grid.dense {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
