@@ -262,7 +262,7 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
                                     <div className="header-title-box" style={{ minWidth: '400px' }}>
                                         <p>{sd.meta || 'RECIPE // BRIGADE_SOP'}</p>
                                         <div className="flex items-center gap-3">
-                                            <h2>{(sd.title || slide.dish_name || '').replace(/^\d+[\s.\-_]*/, '')}</h2>
+                                            <h2>{translateIngredient((sd.title || slide.dish_name || '').replace(/^\d+[\s.\-_]*/, ''))}</h2>
                                             <div className="bg-app-accent/10 border border-app-accent/30 px-2 py-1 rounded text-[10px] font-black text-app-accent uppercase tracking-widest">
                                                 {volumeFocus} PPL Focus
                                             </div>
@@ -285,7 +285,7 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
                                     <div className="header-viz">
                                         <img
                                             src={sd.image || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?q=80&w=2680&auto=format&fit=crop'}
-                                            alt={(slide.dish_name || '').replace(/^\d+[\s.\-_]*/, '')}
+                                            alt={translateIngredient((slide.dish_name || '').replace(/^\d+[\s.\-_]*/, ''))}
                                         />
                                     </div>
                                 </header>

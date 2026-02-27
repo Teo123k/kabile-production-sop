@@ -165,11 +165,17 @@ const SopMain = () => {
     if (val <= 0) return 0;
     const u = (unit || '').toLowerCase();
 
-    // 1. Bulk Units (kg, L, Liter) - aggressive 0.5 steps
-    if (u.includes('kg') || u.includes('l')) {
+    // 1. Bulk Units (kg, L, Liter, lb, qt) - aggressive 0.5 steps
+    if (['kg', 'l', 'liter', 'lb', 'qt'].some(x => u.includes(x))) {
       // User requested decimal precision (e.g. 2.3kg for 2332g)
       const r = Math.round(val * 10) / 10;
       return r > 0 ? r : Math.ceil(val * 10) / 10; // never zero a positive value
+    }
+
+    // 1.5 Medium Imperial Units (oz, fl oz, cup) - 0.25 steps (quarter cups/ounces)
+    if (['oz', 'fl oz', 'cup'].some(x => u.includes(x))) {
+      const fraction = Math.round(val * 4) / 4;
+      return fraction > 0 ? fraction : Math.round(val * 10) / 10;
     }
 
     // 2. Small Units (g, ml) - 0 / 5 rule
@@ -256,14 +262,43 @@ const SopMain = () => {
     let displayVal = val;
     let displayUnit = unit || '';
 
-    // Auto-scale units for better readability
     const uMatch = displayUnit.toLowerCase();
-    if (uMatch === 'g' && val >= 1000) {
-      displayVal = val / 1000;
-      displayUnit = 'kg';
-    } else if (uMatch === 'ml' && val >= 1000) {
-      displayVal = val / 1000;
-      displayUnit = 'L';
+    if (unitSystem === 'imperial') {
+      if (uMatch === 'g' || uMatch === 'kg') {
+        let oz = displayVal;
+        if (uMatch === 'kg') oz = displayVal * 1000;
+        oz = oz * 0.035274;
+        if (oz >= 16) {
+          displayVal = oz / 16;
+          displayUnit = 'lb';
+        } else {
+          displayVal = oz;
+          displayUnit = 'oz';
+        }
+      } else if (uMatch === 'ml' || uMatch === 'l' || uMatch === 'liter') {
+        let floz = displayVal;
+        if (uMatch !== 'ml') floz = displayVal * 1000;
+        floz = floz * 0.033814;
+        if (floz >= 32) {
+          displayVal = floz / 32;
+          displayUnit = 'qt';
+        } else if (floz >= 8) {
+          displayVal = floz / 8;
+          displayUnit = 'cup';
+        } else {
+          displayVal = floz;
+          displayUnit = 'fl oz';
+        }
+      }
+    } else {
+      // Auto-scale units for metric readability
+      if (uMatch === 'g' && val >= 1000) {
+        displayVal = val / 1000;
+        displayUnit = 'kg';
+      } else if (uMatch === 'ml' && val >= 1000) {
+        displayVal = val / 1000;
+        displayUnit = 'L';
+      }
     }
 
     const rounded = chefRound(displayVal, displayUnit);
@@ -271,7 +306,7 @@ const SopMain = () => {
     // Formatting the number string
     let valStr = rounded.toString();
     const duLower = displayUnit.toLowerCase();
-    if (duLower.includes('kg') || duLower.includes('l')) {
+    if (['kg', 'l', 'lb', 'qt'].some(u => duLower.includes(u))) {
       valStr = rounded.toFixed(1).replace(/\.0$/, "");
     }
 
@@ -869,10 +904,11 @@ const SopMain = () => {
                             const val = parseFloat(e.target.value) || 0;
                             if (portionMode) {
                               const pSize = getPortionSize(recipe);
+                              const finalPortions = Math.max(val, batchSettings.minPortions || 50);
                               if (recipe.unit?.toLowerCase().includes('portion')) {
-                                setDailyProduction({ ...dailyProduction, [recipe.id]: val });
+                                setDailyProduction({ ...dailyProduction, [recipe.id]: finalPortions });
                               } else {
-                                setDailyProduction({ ...dailyProduction, [recipe.id]: Number((val * pSize).toFixed(2)) });
+                                setDailyProduction({ ...dailyProduction, [recipe.id]: Number((finalPortions * pSize).toFixed(2)) });
                               }
                             } else {
                               const { u } = formatDisplay(dailyProduction[recipe.id] || 0, recipe.unit);
@@ -907,7 +943,7 @@ const SopMain = () => {
                   Object.entries(aggregatedOrder).forEach(([cat, items]) => {
                     items.forEach(i => {
                       const { val: v, unit: u } = formatQuantity(i.qty, i.unit);
-                      csv += `${cat},${i.name},${v},${u}\n`;
+                      csv += `${translateIngredient(cat)},${translateIngredient(i.name)},${v},${u}\n`;
                     });
                   });
                   const blob = new Blob([csv], { type: 'text/csv' });
@@ -929,7 +965,7 @@ const SopMain = () => {
                     <tbody className="divide-y divide-app-border">
                       {Object.entries(aggregatedOrder).map(([cat, items]) => (
                         <React.Fragment key={cat}>
-                          <tr className="bg-app-bg"><td colSpan="2" className="px-6 py-2 border-y border-app-border"><span className="text-[10px] font-bold uppercase text-app-muted tracking-widest flex items-center gap-2"><Tag size={10} /> {cat}</span></td></tr>
+                          <tr className="bg-app-bg"><td colSpan="2" className="px-6 py-2 border-y border-app-border"><span className="text-[10px] font-bold uppercase text-app-muted tracking-widest flex items-center gap-2"><Tag size={10} /> {translateIngredient(cat)}</span></td></tr>
                           {items.map((item, i) => (
                             <tr key={i} className="hover:bg-app-bg transition-colors">
                               <td className="px-6 py-4 font-medium text-[15px] text-app-text">{translateIngredient(item.name)}</td>
@@ -953,10 +989,10 @@ const SopMain = () => {
                 <button onClick={() => {
                   let text = `*KABILE MARKET ORDER - ${new Date().toLocaleDateString()}*\n\n`;
                   Object.entries(aggregatedOrder).forEach(([cat, items]) => {
-                    text += `--- *${cat}* ---\n`;
+                    text += `--- *${translateIngredient(cat)}* ---\n`;
                     items.forEach(i => {
                       const { val: v, unit: u } = formatQuantity(i.qty, i.unit);
-                      text += `• ${i.name}: ${v} ${u}\n`;
+                      text += `• ${translateIngredient(i.name)}: ${v} ${u}\n`;
                     });
                     text += `\n`;
                   });
