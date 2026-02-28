@@ -116,37 +116,39 @@ const SopMain = () => {
   const getPortionSize = (recipe) => {
     if (!recipe) return 250;
 
-    // 1. Database Override (Explicitly set by chef)
+    // 1. Database Override (Explicitly set by chef - The Future-Proof Solution)
     if (recipe.portionSize) return recipe.portionSize;
 
     // 2. Unit Override (If unit is already in Portions)
     const unit = (recipe.unit || '').toLowerCase();
     if (unit.includes('portion')) return 1;
 
-    // 3. Category & Style Intelligence
+    // 3. Category & Style Heuristics
     const style = (recipe.dishStyle || recipe.style || '').toLowerCase();
     const cat = (recipe.dishCategory || '').toLowerCase();
 
-    // Condiments / Coatings / Sauces (High concentration, small portions)
+    // Condiments / Coatings / Sauces (40g)
     if (['sauce', 'glaze', 'marinade', 'coating', 'paste', 'dip'].includes(style) ||
-      ['condiment', 'sauce', 'pickle'].includes(cat)) {
-      return 40; // 40g/ml standard for coatings/sauces
+      ['condiment', 'sauce', 'topping'].includes(cat)) {
+      return 40;
     }
 
-    // Sides / Small Starters / Snacks
-    if (['side', 'snack', 'vegetable_dish', 'appetizer'].includes(cat) ||
-      ['steamed', 'raw'].includes(style)) {
-      return 100; // 100g standard side
+    // Sides / Salads / Starters / Pickles (100g)
+    // Adding 'side', 'salad', and 'pickle' to both style/cat checks
+    if (['side', 'snack', 'vegetable_dish', 'appetizer', 'salad', 'pickle'].includes(cat) ||
+      ['side', 'steamed', 'raw', 'salad', 'pickle'].includes(style)) {
+      return 100;
     }
 
     // Foundational Prep (Bulk batches)
     if (style === 'prep' || cat === 'base' || cat === 'stock') {
-      return 1000; // 1kg foundational unit
+      return 1000;
     }
 
-    // Default: Main Dish / Protein / Carbohydrate
-    return 250; // 250g/ml standard main portion
+    // Standard Main Dish (250g)
+    return 250;
   };
+
 
   const currentPortionCount = useMemo(() => {
     if (!activeRecipe) return 0;
