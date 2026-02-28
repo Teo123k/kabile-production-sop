@@ -482,17 +482,8 @@ const SopMain = () => {
             {portionMode ? <Utensils size={14} /> : <Beef size={14} />}
             {portionMode ? "Test (Portions)" : "Production Mode"}
           </button>
-          <div className="w-px h-4 bg-app-border my-auto mx-1" />
-          <button
-            onClick={() => setIsSettingsOpen(true)}
-            className="flex items-center gap-2 px-3 py-1.5 text-[10px] font-black uppercase text-app-muted hover:text-app-text hover:bg-app-bg rounded transition-all"
-          >
-            <SettingsIcon size={14} /> Settings
-          </button>
         </div>
       </nav>
-
-      <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
 
       <div className="max-w-[1280px] mx-auto">
         {view === 'presentation' && (
