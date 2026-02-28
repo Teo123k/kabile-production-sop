@@ -756,7 +756,7 @@ const SopMain = () => {
                   <div className="flex items-center gap-2">
                     <input
                       type="number"
-                      step={portionMode ? "10" : "0.5"}
+                      step={portionMode ? "1" : "0.5"}
                       min="0"
                       value={portionMode
                         ? currentPortionCount
