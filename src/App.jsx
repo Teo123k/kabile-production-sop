@@ -68,6 +68,8 @@ const SopMain = () => {
     setSidePortionSize,
     volumeFocus,
     setVolumeFocus,
+    portionsPerBatch,
+    setPortionsPerBatch,
     batchSettings,
     setBatchSettings,
     translateIngredient
@@ -98,7 +100,10 @@ const SopMain = () => {
         if (parsed.length > 0) {
           setSelectedId(parsed[0].id);
           const initYields = {};
-          parsed.forEach(r => initYields[r.id] = r.baseYield);
+          parsed.forEach(r => {
+            const pSize = getPortionSize(r);
+            initYields[r.id] = volumeFocus * pSize;
+          });
           setDailyProduction(initYields);
         }
       }
@@ -113,6 +118,17 @@ const SopMain = () => {
     document.documentElement.style.setProperty('--app-accent', config.accentColor);
     document.documentElement.style.setProperty('--app-accent-hover', `${config.accentColor}dd`);
   }, [config]);
+
+  // Reactive Sync: Update yields when Master Rules (Volume/Portion) change
+  useEffect(() => {
+    if (recipes.length === 0) return;
+    const updated = { ...dailyProduction };
+    recipes.forEach(r => {
+      const pSize = getPortionSize(r);
+      updated[r.id] = volumeFocus * pSize;
+    });
+    setDailyProduction(updated);
+  }, [volumeFocus, mainPortionSize, sidePortionSize]);
 
   // SHARED STATE: Initialized with Base Yields
   const [dailyProduction, setDailyProduction] = useState({});
@@ -581,6 +597,23 @@ const SopMain = () => {
 
                       <div className="flex items-center justify-between p-6 bg-app-bg border border-app-border rounded-xl relative overflow-hidden group">
                         <div className="relative z-10">
+                          <p className="text-xs font-black text-app-text uppercase">Batch Size (Standard)</p>
+                          <p className="text-[8px] text-app-muted uppercase font-bold">Portions per Batch</p>
+                        </div>
+                        <div className="relative z-10 flex items-center gap-4">
+                          <input
+                            type="number"
+                            value={portionsPerBatch}
+                            onChange={(e) => setPortionsPerBatch(parseInt(e.target.value) || 0)}
+                            className="bg-app-surface border border-app-border rounded p-2 w-20 text-right font-black text-2xl text-app-accent outline-none focus:border-app-accent"
+                          />
+                          <span className="text-[10px] font-black text-app-muted">PCS</span>
+                        </div>
+                        <Package className="absolute -bottom-2 -right-2 text-app-accent/5" size={80} />
+                      </div>
+
+                      <div className="flex items-center justify-between p-6 bg-app-bg border border-app-border rounded-xl relative overflow-hidden group">
+                        <div className="relative z-10">
                           <p className="text-xs font-black text-app-text uppercase">Side Dish Portion</p>
                           <p className="text-[8px] text-app-muted uppercase font-bold">Heuristic Weight (g/ml)</p>
                         </div>
@@ -694,7 +727,7 @@ const SopMain = () => {
                       min="0"
                       value={portionMode
                         ? currentPortionCount
-                        : (currentYieldValue / (volumeFocus * getPortionSize(activeRecipe)) || 0).toFixed(1)
+                        : (currentYieldValue / (portionsPerBatch * getPortionSize(activeRecipe)) || 0).toFixed(1)
                       }
                       onChange={(e) => {
                         const val = parseFloat(e.target.value) || 0;
@@ -708,8 +741,8 @@ const SopMain = () => {
                             setDailyProduction({ ...dailyProduction, [selectedId]: Number(requiredYield.toFixed(2)) });
                           }
                         } else {
-                          // REDEFINED BATCH: 1 Batch = volumeFocus * portionSize
-                          const requiredYield = val * (volumeFocus * pSize);
+                          // REDEFINED BATCH: 1 Batch = portionsPerBatch * portionSize
+                          const requiredYield = val * (portionsPerBatch * pSize);
                           setDailyProduction({ ...dailyProduction, [selectedId]: Number(requiredYield.toFixed(2)) });
                         }
                       }}
@@ -731,13 +764,13 @@ const SopMain = () => {
                 {/* Portion Intelligence Display */}
                 <div className="flex flex-col justify-center border-l border-app-border pl-6">
                   <div className="flex items-center gap-2">
-                    <Utensils size={12} className="text-app-accent opacity-50" />
-                    <div className="text-[10px] font-black text-app-text uppercase">
-                      ~{currentPortionCount} <span className="text-app-muted">Portions</span>
+                    <Scale size={12} className="text-app-accent opacity-50" />
+                    <div className="text-[14px] font-black text-app-text uppercase">
+                      {formatDisplay(currentYieldValue, activeRecipe.unit).v} <span className="text-app-accent">{formatDisplay(currentYieldValue, activeRecipe.unit).u}</span>
                     </div>
                   </div>
                   <div className="text-[8px] font-bold text-app-muted uppercase tracking-tight">
-                    {volumeFocus} ppl / batch  <span className="text-app-accent ml-1">(1 port. = {getPortionSize(activeRecipe)}g/ml)</span>
+                    Target Ops Volume: <span className="text-white">{volumeFocus} ppl</span> <span className="text-app-accent ml-1">(1 port. = {getPortionSize(activeRecipe)}g/ml)</span>
                   </div>
                 </div>
 
