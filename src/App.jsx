@@ -66,6 +66,8 @@ const SopMain = () => {
     setMainPortionSize,
     sidePortionSize,
     setSidePortionSize,
+    starterPortionSize,
+    setStarterPortionSize,
     volumeFocus,
     setVolumeFocus,
     portionsPerBatch,
@@ -94,7 +96,12 @@ const SopMain = () => {
       } else {
         const parsed = data.map(row => {
           const r = typeof row.recipe_json === 'string' ? JSON.parse(row.recipe_json) : row.recipe_json;
-          return { ...r };
+          // De-duplicate metadata: DB columns win over legacy JSON internal IDs
+          return {
+            ...r,
+            dishStyle: row.dish_style || r.dishStyle || r.style,
+            dishCategory: row.cuisine_type || r.dishCategory || r.category
+          };
         });
         setRecipes(parsed);
         if (parsed.length > 0) {
@@ -128,7 +135,7 @@ const SopMain = () => {
       updated[r.id] = volumeFocus * pSize;
     });
     setDailyProduction(updated);
-  }, [volumeFocus, mainPortionSize, sidePortionSize]);
+  }, [volumeFocus, mainPortionSize, sidePortionSize, starterPortionSize]);
 
   // SHARED STATE: Initialized with Base Yields
   const [dailyProduction, setDailyProduction] = useState({});
@@ -148,6 +155,7 @@ const SopMain = () => {
 
     // 2. Unit Override (If unit is already in Portions)
     const unit = (recipe.unit || '').toLowerCase();
+    const name = (recipe.name || '').toLowerCase();
     if (unit.includes('portion')) return 1;
 
     // 3. Category & Style Heuristics (Master Rules driven)
@@ -156,14 +164,22 @@ const SopMain = () => {
 
     // Condiments / Coatings / Sauces (40g)
     if (['sauce', 'glaze', 'marinade', 'coating', 'paste', 'dip'].includes(style) ||
-      ['condiment', 'sauce', 'topping'].includes(cat)) {
+      ['condiment', 'sauce', 'topping'].includes(cat) || name.includes('sauce')) {
       return 40;
     }
 
-    // Sides / Salads / Starters / Pickles (Driven by Master Rule: sidePortionSize)
-    if (['side', 'snack', 'vegetable_dish', 'appetizer', 'salad', 'pickle'].includes(cat) ||
-      ['side', 'steamed', 'raw', 'salad', 'pickle'].includes(style)) {
+    // Sides / Salads / Pickles (Driven by Master Rule: sidePortionSize)
+    if (['side', 'snack', 'vegetable_dish', 'pickle'].includes(cat) ||
+      ['side', 'steamed', 'raw', 'pickle'].includes(style) ||
+      name.includes('kimchi') || name.includes('pickle')) {
       return sidePortionSize;
+    }
+
+    // Starters / Appetizers / Salads (Driven by Master Rule: starterPortionSize)
+    if (['appetizer', 'starter', 'salad'].includes(cat) ||
+      ['appetizer', 'starter', 'salad'].includes(style) ||
+      name.includes('salad') || name.includes('appetizer')) {
+      return starterPortionSize;
     }
 
     // Foundational Prep (Bulk batches)
@@ -627,6 +643,23 @@ const SopMain = () => {
                           <span className="text-[10px] font-black text-app-muted">G</span>
                         </div>
                         <Wind className="absolute -bottom-2 -right-2 text-app-accent/5" size={80} />
+                      </div>
+
+                      <div className="flex items-center justify-between p-6 bg-app-bg border border-app-border rounded-xl relative overflow-hidden group">
+                        <div className="relative z-10">
+                          <p className="text-xs font-black text-app-text uppercase">Starter Dish Portion</p>
+                          <p className="text-[8px] text-app-muted uppercase font-bold">Standard Weight (g/ml)</p>
+                        </div>
+                        <div className="relative z-10 flex items-center gap-4">
+                          <input
+                            type="number"
+                            value={starterPortionSize}
+                            onChange={(e) => setStarterPortionSize(parseInt(e.target.value) || 0)}
+                            className="bg-app-surface border border-app-border rounded p-2 w-20 text-right font-black text-2xl text-app-accent outline-none focus:border-app-accent"
+                          />
+                          <span className="text-[10px] font-black text-app-muted">G</span>
+                        </div>
+                        <Utensils className="absolute -bottom-2 -right-2 text-app-accent/5" size={80} />
                       </div>
                     </div>
                     <p className="text-[9px] font-bold text-app-muted uppercase italic bg-app-accent/5 p-3 rounded-lg border border-app-accent/10">
