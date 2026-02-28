@@ -574,8 +574,7 @@ const SopMain = () => {
                         const val = parseFloat(e.target.value) || 0;
                         const pSize = getPortionSize(activeRecipe);
                         if (portionMode) {
-                          // Enforce 50 portion minimum floor
-                          const finalPortions = Math.max(val, batchSettings.minPortions || 50);
+                          const finalPortions = val;
                           if (activeRecipe.unit?.toLowerCase().includes('portion')) {
                             setDailyProduction({ ...dailyProduction, [selectedId]: finalPortions });
                           } else {
@@ -904,7 +903,7 @@ const SopMain = () => {
                             const val = parseFloat(e.target.value) || 0;
                             if (portionMode) {
                               const pSize = getPortionSize(recipe);
-                              const finalPortions = Math.max(val, batchSettings.minPortions || 50);
+                              const finalPortions = val;
                               if (recipe.unit?.toLowerCase().includes('portion')) {
                                 setDailyProduction({ ...dailyProduction, [recipe.id]: finalPortions });
                               } else {
