@@ -24,11 +24,13 @@ import {
   ClipboardCheck,
   Settings as SettingsIcon,
   Globe,
-  Languages
+  Languages,
+  Moon,
+  Sun,
+  Gauge
 } from 'lucide-react';
 import { Routes, Route, useParams, Navigate } from 'react-router-dom';
 import { useSettings } from './SettingsContext';
-import SettingsModal from './SettingsModal';
 
 const CLIENT_CONFIGS = {
   'kabile': {
@@ -54,13 +56,22 @@ const SopMain = () => {
   const [selectedId, setSelectedId] = useState(null);
   const [checkedItems, setCheckedItems] = useState({});
   const {
+    theme,
+    setTheme,
     language,
+    setLanguage,
     unitSystem,
+    setUnitSystem,
+    mainPortionSize,
+    setMainPortionSize,
+    sidePortionSize,
+    setSidePortionSize,
     volumeFocus,
+    setVolumeFocus,
     batchSettings,
+    setBatchSettings,
     translateIngredient
   } = useSettings();
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [portionMode, setPortionMode] = useState(false);
   const [editingIngId, setEditingIngId] = useState(null);
 
@@ -114,16 +125,16 @@ const SopMain = () => {
 
   // PORTION LOGIC Helper: Intelligent weights based on dish style
   const getPortionSize = (recipe) => {
-    if (!recipe) return 250;
+    if (!recipe) return mainPortionSize;
 
-    // 1. Database Override (Explicitly set by chef - The Future-Proof Solution)
+    // 1. Database Override (Explicitly set by chef)
     if (recipe.portionSize) return recipe.portionSize;
 
     // 2. Unit Override (If unit is already in Portions)
     const unit = (recipe.unit || '').toLowerCase();
     if (unit.includes('portion')) return 1;
 
-    // 3. Category & Style Heuristics
+    // 3. Category & Style Heuristics (Master Rules driven)
     const style = (recipe.dishStyle || recipe.style || '').toLowerCase();
     const cat = (recipe.dishCategory || '').toLowerCase();
 
@@ -133,11 +144,10 @@ const SopMain = () => {
       return 40;
     }
 
-    // Sides / Salads / Starters / Pickles (100g)
-    // Adding 'side', 'salad', and 'pickle' to both style/cat checks
+    // Sides / Salads / Starters / Pickles (Driven by Master Rule: sidePortionSize)
     if (['side', 'snack', 'vegetable_dish', 'appetizer', 'salad', 'pickle'].includes(cat) ||
       ['side', 'steamed', 'raw', 'salad', 'pickle'].includes(style)) {
-      return 100;
+      return sidePortionSize;
     }
 
     // Foundational Prep (Bulk batches)
@@ -145,8 +155,8 @@ const SopMain = () => {
       return 1000;
     }
 
-    // Standard Main Dish (250g)
-    return 250;
+    // Standard Main Dish (Driven by Master Rule: mainPortionSize)
+    return mainPortionSize;
   };
 
 
@@ -459,6 +469,9 @@ const SopMain = () => {
           <button onClick={() => setView('presentation')} className={`flex items-center gap-2 px-6 py-2.5 font-bold uppercase text-[10px] rounded transition-colors ${view === 'presentation' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
             <LayoutDashboard size={14} /> Presentation
           </button>
+          <button onClick={() => setView('settings')} className={`flex items-center gap-2 px-6 py-2.5 font-bold uppercase text-[10px] rounded transition-colors ${view === 'settings' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
+            <SettingsIcon size={14} /> Master Rules
+          </button>
         </div>
 
         <div className="flex bg-app-surface border border-app-border rounded-lg p-1 gap-1">
@@ -492,7 +505,127 @@ const SopMain = () => {
           </div>
         )}
 
+        {view === 'settings' && (
+          <div className="max-w-4xl mx-auto animate-in fade-in zoom-in-95 duration-500">
+            <div className="bg-app-surface border border-app-border rounded-xl shadow-2xl overflow-hidden">
+              <div className="bg-app-accent/5 p-8 border-b border-app-border">
+                <div className="flex items-center gap-4">
+                  <div className="bg-app-accent p-3 rounded-xl text-app-bg shadow-lg shadow-app-accent/20">
+                    <SettingsIcon size={32} />
+                  </div>
+                  <div>
+                    <h2 className="text-3xl font-black uppercase tracking-tight text-app-text">Master Rules Configuration</h2>
+                    <p className="text-xs font-bold text-app-muted uppercase tracking-[0.2em]">Global Operational Standards</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-8 grid grid-cols-1 md:grid-cols-2 gap-12">
+                {/* Visuals & Localization */}
+                <div className="space-y-8">
+                  <section className="space-y-4">
+                    <h3 className="text-[10px] font-black uppercase tracking-widest text-app-accent flex items-center gap-2">
+                      <Sun size={14} /> Appearance & Language
+                    </h3>
+                    <div className="grid grid-cols-2 gap-4">
+                      <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="flex flex-col items-center justify-center p-6 bg-app-bg border border-app-border rounded-xl hover:border-app-accent transition-all group">
+                        {theme === 'dark' ? <Moon className="text-app-accent mb-2" /> : <Sun className="text-app-accent mb-2" />}
+                        <span className="text-[10px] font-black uppercase text-app-text">{theme === 'dark' ? 'Dark Mode' : 'Light Mode'}</span>
+                      </button>
+                      <button onClick={() => setLanguage(language === 'EN' ? 'TR' : 'EN')} className="flex flex-col items-center justify-center p-6 bg-app-bg border border-app-border rounded-xl hover:border-app-accent transition-all group">
+                        <Languages className="text-app-accent mb-2" />
+                        <span className="text-[10px] font-black uppercase text-app-text">{language === 'EN' ? 'English (SOP)' : 'Türkçe (SOP)'}</span>
+                      </button>
+                    </div>
+                  </section>
+
+                  <section className="space-y-4">
+                    <h3 className="text-[10px] font-black uppercase tracking-widest text-app-accent flex items-center gap-2">
+                      <Gauge size={14} /> Operational Scale
+                    </h3>
+                    <div className="space-y-4">
+                      <div className="bg-app-bg p-4 rounded-xl border border-app-border">
+                        <div className="flex justify-between items-center mb-4">
+                          <span className="text-[10px] font-black uppercase text-app-text">Daily Volume Focus</span>
+                          <span className="text-app-accent font-black text-xl">{volumeFocus} ppl</span>
+                        </div>
+                        <input
+                          type="range" min="10" max="1000" step="10"
+                          value={volumeFocus}
+                          onChange={(e) => setVolumeFocus(parseInt(e.target.value))}
+                          className="w-full accent-app-accent bg-app-surface h-1.5 rounded-full appearance-none cursor-pointer"
+                        />
+                        <div className="flex justify-between mt-2 text-[8px] font-black text-app-muted uppercase">
+                          <span>Small Batch</span>
+                          <span>Industrial Scale</span>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+                </div>
+
+                {/* Master Rules (Portion Weights) */}
+                <div className="space-y-8">
+                  <section className="space-y-4">
+                    <h3 className="text-[10px] font-black uppercase tracking-widest text-app-accent flex items-center gap-2">
+                      <Scale size={14} /> Master Portion Weights (Standard)
+                    </h3>
+                    <div className="grid grid-cols-1 gap-4">
+                      <div className="flex items-center justify-between p-6 bg-app-bg border border-app-border rounded-xl relative overflow-hidden group">
+                        <div className="relative z-10">
+                          <p className="text-xs font-black text-app-text uppercase">Main Dish Portion</p>
+                          <p className="text-[8px] text-app-muted uppercase font-bold">Standard Weight (g/ml)</p>
+                        </div>
+                        <div className="relative z-10 flex items-center gap-4">
+                          <input
+                            type="number"
+                            value={mainPortionSize}
+                            onChange={(e) => setMainPortionSize(parseInt(e.target.value) || 0)}
+                            className="bg-app-surface border border-app-border rounded p-2 w-20 text-right font-black text-2xl text-app-accent outline-none focus:border-app-accent"
+                          />
+                          <span className="text-[10px] font-black text-app-muted">G</span>
+                        </div>
+                        <Beef className="absolute -bottom-2 -right-2 text-app-accent/5" size={80} />
+                      </div>
+
+                      <div className="flex items-center justify-between p-6 bg-app-bg border border-app-border rounded-xl relative overflow-hidden group">
+                        <div className="relative z-10">
+                          <p className="text-xs font-black text-app-text uppercase">Side Dish Portion</p>
+                          <p className="text-[8px] text-app-muted uppercase font-bold">Heuristic Weight (g/ml)</p>
+                        </div>
+                        <div className="relative z-10 flex items-center gap-4">
+                          <input
+                            type="number"
+                            value={sidePortionSize}
+                            onChange={(e) => setSidePortionSize(parseInt(e.target.value) || 0)}
+                            className="bg-app-surface border border-app-border rounded p-2 w-20 text-right font-black text-2xl text-app-accent outline-none focus:border-app-accent"
+                          />
+                          <span className="text-[10px] font-black text-app-muted">G</span>
+                        </div>
+                        <Wind className="absolute -bottom-2 -right-2 text-app-accent/5" size={80} />
+                      </div>
+                    </div>
+                    <p className="text-[9px] font-bold text-app-muted uppercase italic bg-app-accent/5 p-3 rounded-lg border border-app-accent/10">
+                      Note: These weights are used globally to calculate portion counts from total production yields.
+                    </p>
+                  </section>
+                </div>
+              </div>
+
+              <div className="bg-app-bg/50 p-6 border-t border-app-border flex justify-end">
+                <button
+                  onClick={() => setView('scaler')}
+                  className="px-10 py-4 bg-app-accent text-app-bg font-black uppercase text-xs tracking-widest rounded-xl shadow-lg shadow-app-accent/20 hover:scale-[1.02] transition-all"
+                >
+                  Return to Dashboard
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {view === 'board' && (
+
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
             <CommandBoard
               clientId={clientSlug || 'kabile'}

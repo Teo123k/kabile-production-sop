@@ -9,6 +9,8 @@ export const SettingsProvider = ({ children }) => {
     const [language, setLanguage] = useState(() => localStorage.getItem('sop-lang') || 'EN');
     const [unitSystem, setUnitSystem] = useState(() => localStorage.getItem('sop-units') || 'metric'); // metric (ml/L/g/kg)
     const [country, setCountry] = useState(() => localStorage.getItem('sop-country') || 'TR');
+    const [mainPortionSize, setMainPortionSize] = useState(() => parseInt(localStorage.getItem('sop-main-portion')) || 250);
+    const [sidePortionSize, setSidePortionSize] = useState(() => parseInt(localStorage.getItem('sop-side-portion')) || 100);
     const [volumeFocus, setVolumeFocus] = useState(() => parseInt(localStorage.getItem('sop-volume-focus')) || 50);
     const [batchSettings, setBatchSettings] = useState(() => {
         const saved = localStorage.getItem('sop-batch-settings');
@@ -38,6 +40,14 @@ export const SettingsProvider = ({ children }) => {
     useEffect(() => {
         localStorage.setItem('sop-volume-focus', volumeFocus);
     }, [volumeFocus]);
+
+    useEffect(() => {
+        localStorage.setItem('sop-main-portion', mainPortionSize);
+    }, [mainPortionSize]);
+
+    useEffect(() => {
+        localStorage.setItem('sop-side-portion', sidePortionSize);
+    }, [sidePortionSize]);
 
     useEffect(() => {
         localStorage.setItem('sop-batch-settings', JSON.stringify(batchSettings));
@@ -129,6 +139,10 @@ export const SettingsProvider = ({ children }) => {
         setUnitSystem,
         country,
         setCountry,
+        mainPortionSize,
+        setMainPortionSize,
+        sidePortionSize,
+        setSidePortionSize,
         volumeFocus,
         setVolumeFocus,
         batchSettings,
