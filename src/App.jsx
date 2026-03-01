@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { supabase } from './supabaseClient';
 import CinematicSOP from './CinematicSOP';
 import CommandBoard from './CommandBoard';
@@ -32,6 +32,8 @@ import {
 import { Routes, Route, useParams, Navigate } from 'react-router-dom';
 import { useSettings } from './SettingsContext';
 
+import { calculateBOM } from './utils/BOMEngine';
+
 const CLIENT_CONFIGS = {
   'kabile': {
     name: 'bu_Kabile',
@@ -47,7 +49,30 @@ const CLIENT_CONFIGS = {
   }
 };
 
-// MASTER_RECIPES removed - now fetched from Supabase
+// [LOCKED] CORE ROUNDING LOGIC - DO NOT MODIFY WITHOUT AUDIT
+const chefRound = (val, unit = '') => {
+  if (val <= 0) return 0;
+  const u = (unit || '').toLowerCase();
+
+  // 1. Bulk Units (kg, L, Liter, lb, qt) - aggressive 0.5 steps
+  if (['kg', 'l', 'liter', 'lb', 'qt'].some(x => u.includes(x))) {
+    // User requested decimal precision (e.g. 2.3kg for 2332g)
+    const r = Math.round(val * 10) / 10;
+    return r > 0 ? r : Math.ceil(val * 10) / 10; // never zero a positive value
+  }
+
+  // 1.5 Medium Imperial Units (oz, fl oz, cup) - 0.25 steps (quarter cups/ounces)
+  if (['oz', 'fl oz', 'cup'].some(x => u.includes(x))) {
+    const fraction = Math.round(val * 4) / 4;
+    return fraction > 0 ? fraction : Math.round(val * 10) / 10;
+  }
+
+  // 2. Small Units (g, ml) - 0 / 5 rule
+  if (val < 1) return Math.ceil(val * 10) / 10;   // e.g. 0.2 -> 0.2, 0.09 -> 0.1
+  if (val < 5) return Math.round(val * 2) / 2;     // e.g. 1.44 -> 1.5
+  if (val < 10) return Math.round(val);             // e.g. 8.2 -> 8
+  return Math.round(val / 5) * 5;                   // e.g. 104 -> 105, 39 -> 40
+};
 
 const SopMain = () => {
   const [recipes, setRecipes] = useState([]);
@@ -74,6 +99,8 @@ const SopMain = () => {
     setPortionsPerBatch,
     batchSettings,
     setBatchSettings,
+    menuMix,
+    setMenuMix,
     translateIngredient
   } = useSettings();
   const [portionMode, setPortionMode] = useState(false);
@@ -82,227 +109,9 @@ const SopMain = () => {
   const { clientSlug } = useParams();
   const config = CLIENT_CONFIGS[clientSlug] || CLIENT_CONFIGS['kabile'];
 
-  // Fetch Recipes from Supabase
-  useEffect(() => {
-    async function getRecipes() {
-      setLoading(true);
-      const { data, error } = await supabase
-        .from('consulting_sops')
-        .select('*')
-        .eq('client_id', clientSlug || 'kabile');
-
-      if (error) {
-        console.error('Error fetching recipes:', error);
-      } else {
-        const parsed = data.map(row => {
-          const r = typeof row.recipe_json === 'string' ? JSON.parse(row.recipe_json) : row.recipe_json;
-          // De-duplicate metadata: DB columns win over legacy JSON internal IDs
-          return {
-            ...r,
-            dishStyle: row.dish_style || r.dishStyle || r.style,
-            dishCategory: row.cuisine_type || r.dishCategory || r.category
-          };
-        });
-        setRecipes(parsed);
-        if (parsed.length > 0) {
-          setSelectedId(parsed[0].id);
-          const initYields = {};
-          parsed.forEach(r => {
-            const pSize = getPortionSize(r);
-            initYields[r.id] = volumeFocus * pSize;
-          });
-          setDailyProduction(initYields);
-        }
-      }
-      setLoading(false);
-    }
-    getRecipes();
-  }, [clientSlug]);
-
-  // Apply Static Theme & Dynamic Brand Colors
-  useEffect(() => {
-    // Branding is separate from Theme
-    document.documentElement.style.setProperty('--app-accent', config.accentColor);
-    document.documentElement.style.setProperty('--app-accent-hover', `${config.accentColor}dd`);
-  }, [config]);
-
-  // Reactive Sync: Update yields when Master Rules (Volume/Portion) change
-  useEffect(() => {
-    if (recipes.length === 0) return;
-    const updated = { ...dailyProduction };
-    recipes.forEach(r => {
-      const pSize = getPortionSize(r);
-      updated[r.id] = volumeFocus * pSize;
-    });
-    setDailyProduction(updated);
-  }, [volumeFocus, mainPortionSize, sidePortionSize, starterPortionSize]);
-
-  // SHARED STATE: Initialized with Base Yields
-  const [dailyProduction, setDailyProduction] = useState({});
-
-  const activeRecipe = useMemo(() =>
-    recipes.find(r => r.id === selectedId) || recipes[0],
-    [selectedId, recipes]);
-
-  const currentYieldValue = activeRecipe ? dailyProduction[selectedId] : 0;
-
-  // PORTION LOGIC Helper: Intelligent weights based on dish style
-  const getPortionSize = (recipe) => {
-    if (!recipe) return mainPortionSize;
-
-    // 1. Database Override (Explicitly set by chef)
-    if (recipe.portionSize) return recipe.portionSize;
-
-    // 2. Unit Override (If unit is already in Portions)
-    const unit = (recipe.unit || '').toLowerCase();
-    const name = (recipe.name || '').toLowerCase();
-    if (unit.includes('portion')) return 1;
-
-    // 3. Category & Style Heuristics (Master Rules driven)
-    const style = (recipe.dishStyle || recipe.style || '').toLowerCase();
-    const cat = (recipe.dishCategory || '').toLowerCase();
-
-    // Condiments / Coatings / Sauces (40g)
-    if (['sauce', 'glaze', 'marinade', 'coating', 'paste', 'dip'].includes(style) ||
-      ['condiment', 'sauce', 'topping'].includes(cat) || name.includes('sauce')) {
-      return 40;
-    }
-
-    // Sides / Salads / Pickles (Driven by Master Rule: sidePortionSize)
-    if (['side', 'snack', 'vegetable_dish', 'pickle'].includes(cat) ||
-      ['side', 'steamed', 'raw', 'pickle'].includes(style) ||
-      name.includes('kimchi') || name.includes('pickle')) {
-      return sidePortionSize;
-    }
-
-    // Starters / Appetizers / Salads (Driven by Master Rule: starterPortionSize)
-    if (['appetizer', 'starter', 'salad'].includes(cat) ||
-      ['appetizer', 'starter', 'salad'].includes(style) ||
-      name.includes('salad') || name.includes('appetizer')) {
-      return starterPortionSize;
-    }
-
-    // Foundational Prep (Bulk batches)
-    if (style === 'prep' || cat === 'base' || cat === 'stock') {
-      return 1000;
-    }
-
-    // Standard Main Dish (Driven by Master Rule: mainPortionSize)
-    return mainPortionSize;
-  };
-
-
-  const currentPortionCount = useMemo(() => {
-    if (!activeRecipe) return 0;
-    if (activeRecipe.unit?.toLowerCase().includes('portion')) return Math.round(currentYieldValue);
-    return Math.round(currentYieldValue / getPortionSize(activeRecipe));
-  }, [currentYieldValue, activeRecipe]);
-
-  const isBulkMode = useMemo(() => {
-    // Volume focus of 300 or 600+ automatically triggers bulk mode for efficiency
-    if (volumeFocus >= 300) return true;
-    return currentYieldValue >= (activeRecipe?.bulkThreshold || 50);
-  }, [currentYieldValue, activeRecipe, volumeFocus]);
-
-  // [LOCKED] CORE ROUNDING LOGIC - DO NOT MODIFY WITHOUT AUDIT
-  const chefRound = (val, unit = '') => {
-    if (val <= 0) return 0;
-    const u = (unit || '').toLowerCase();
-
-    // 1. Bulk Units (kg, L, Liter, lb, qt) - aggressive 0.5 steps
-    if (['kg', 'l', 'liter', 'lb', 'qt'].some(x => u.includes(x))) {
-      // User requested decimal precision (e.g. 2.3kg for 2332g)
-      const r = Math.round(val * 10) / 10;
-      return r > 0 ? r : Math.ceil(val * 10) / 10; // never zero a positive value
-    }
-
-    // 1.5 Medium Imperial Units (oz, fl oz, cup) - 0.25 steps (quarter cups/ounces)
-    if (['oz', 'fl oz', 'cup'].some(x => u.includes(x))) {
-      const fraction = Math.round(val * 4) / 4;
-      return fraction > 0 ? fraction : Math.round(val * 10) / 10;
-    }
-
-    // 2. Small Units (g, ml) - 0 / 5 rule
-    if (val < 1) return Math.ceil(val * 10) / 10;   // e.g. 0.2 -> 0.2, 0.09 -> 0.1
-    if (val < 5) return Math.round(val * 2) / 2;     // e.g. 1.44 -> 1.5
-    if (val < 10) return Math.round(val);             // e.g. 8.2 -> 8
-    return Math.round(val / 5) * 5;                   // e.g. 104 -> 105, 39 -> 40
-  };
-
-  const handleRoundAndFix = () => {
-    if (!activeRecipe) return;
-
-    let bestYield = currentYieldValue;
-    let minTotalVariance = Infinity;
-
-    // Search range: ±15% of current yield.
-    const searchRange = Math.max(activeRecipe.baseYield * 0.1, currentYieldValue * 0.15);
-    const step = activeRecipe.baseYield * 0.01; // Fine granularity
-
-    for (let y = Math.max(0.1, currentYieldValue - searchRange); y <= currentYieldValue + searchRange; y += step) {
-      const f = y / activeRecipe.baseYield;
-      let variance = 0;
-
-      activeRecipe.ingredients.forEach(ing => {
-        const ideal = ing.qty * f;
-        let displayUnit = ing.unit || '';
-        let displayVal = ideal;
-
-        // Match formatQuantity logic for accurate chefRound targeting
-        const uMatch = displayUnit.toLowerCase();
-        if (uMatch === 'g' && ideal >= 1000) { displayVal = ideal / 1000; displayUnit = 'kg'; }
-        else if (uMatch === 'ml' && ideal >= 1000) { displayVal = ideal / 1000; displayUnit = 'L'; }
-
-        const roundedDisplay = chefRound(displayVal, displayUnit);
-
-        // Convert back to base unit for error comparison
-        let roundedBase = roundedDisplay;
-        if (displayUnit === 'kg' && uMatch === 'g') roundedBase = roundedDisplay * 1000;
-        if (displayUnit === 'L' && uMatch === 'ml') roundedBase = roundedDisplay * 1000;
-
-        // Minimize relative error (percentage) so small ingredients like salt hold equal weight
-        const error = Math.abs(ideal - roundedBase) / (ideal || 1);
-        variance += error;
-      });
-
-      if (variance < minTotalVariance) {
-        minTotalVariance = variance;
-        bestYield = y;
-      }
-    }
-
-    setDailyProduction({ ...dailyProduction, [selectedId]: Number(bestYield.toFixed(2)) });
-  };
-
-  const handleReverseScale = (ing, newQty) => {
-    if (!activeRecipe || !newQty || newQty <= 0) return;
-    // factor = newQty / baseQty
-    const factor = newQty / ing.qty;
-    const newYield = activeRecipe.baseYield * factor;
-    setDailyProduction({ ...dailyProduction, [selectedId]: Number(newYield.toFixed(2)) });
-    setEditingIngId(null);
-  };
-
-  const applyMultiplier = (m) => {
-    const updated = { ...dailyProduction };
-    Object.keys(updated).forEach(id => {
-      // If currently zero, we default to 1 batch * m
-      const current = updated[id] || 0;
-      if (current === 0) {
-        const r = recipes.find(rec => rec.id === id);
-        if (r) updated[id] = Number((r.baseYield * m).toFixed(2));
-      } else {
-        updated[id] = Number((current * m).toFixed(2));
-      }
-    });
-    setDailyProduction(updated);
-  };
-
-
-
   // [LOCKED] CORE UNIT FORMATTER - DO NOT MODIFY WITHOUT AUDIT
   // Combined value/unit formatter for ordering
-  const formatQuantity = (val, unit = '') => {
+  const formatQuantity = useCallback((val, unit = '') => {
     let displayVal = val;
     let displayUnit = unit || '';
 
@@ -355,12 +164,290 @@ const SopMain = () => {
     }
 
     return { val: valStr, unit: displayUnit };
-  };
+  }, [unitSystem]);
+
+  const formatDisplay = useCallback((val, unit) => {
+    const { val: v, unit: u } = formatQuantity(val, unit);
+    return { v, u };
+  }, [formatQuantity]);
 
   const formatValue = (val, unit) => {
     const { val: v } = formatQuantity(val, unit);
     return v;
   };
+
+  // SHARED STATE: Initialized with Base Yields
+  const [dailyProduction, setDailyProduction] = useState({});
+
+  // PORTION LOGIC Helper: Intelligent weights based on dish style
+  const getPortionWeight = useCallback((recipe) => {
+    if (!recipe) return mainPortionSize;
+
+    // 1. Database Override
+    if (recipe.portionSize) return parseFloat(recipe.portionSize);
+
+    const style = (recipe.dishStyle || recipe.style || '').toLowerCase();
+    const cat = (recipe.dishCategory || '').toLowerCase();
+    const name = (recipe.name || '').toLowerCase();
+
+    if (['sauce', 'glaze', 'marinade', 'coating', 'paste', 'dip'].includes(style) ||
+      ['condiment', 'sauce', 'topping'].includes(cat) || name.includes('sauce')) {
+      return 40;
+    }
+
+    if (['side', 'snack', 'vegetable_dish', 'pickle'].includes(cat) ||
+      ['side', 'steamed', 'raw', 'pickle'].includes(style) ||
+      name.includes('kimchi') || name.includes('pickle')) {
+      return sidePortionSize;
+    }
+
+    if (['appetizer', 'starter', 'salad'].includes(cat) ||
+      ['appetizer', 'starter', 'salad'].includes(style) ||
+      name.includes('salad') || name.includes('appetizer')) {
+      return starterPortionSize;
+    }
+
+    if (style === 'prep' || cat === 'base' || cat === 'stock') {
+      return 1000;
+    }
+
+    return mainPortionSize;
+  }, [mainPortionSize, sidePortionSize, starterPortionSize]);
+
+  const getPortionSize = useCallback((recipe) => {
+    if (!recipe) return mainPortionSize;
+    const unit = (recipe.unit || '').toLowerCase();
+    if (unit.includes('portion')) return 1;
+    return getPortionWeight(recipe);
+  }, [getPortionWeight, mainPortionSize]);
+
+  // Fetch Recipes from Supabase with Rich Data Merging
+  useEffect(() => {
+    async function getRecipes() {
+      setLoading(true);
+      try {
+        // Fetch from multiple tables to extract the richest possible operational data
+        const [recipeRes, legacyRes] = await Promise.all([
+          supabase.from('sop_recipes').select('*').eq('client_id', clientSlug || 'kabile'),
+          supabase.from('consulting_sops').select('*').eq('client_id', clientSlug || 'kabile')
+        ]);
+
+        const normalize = (s) => (s || '').toLowerCase().trim().replace(/^\d+[\s.\-_]*/, '').replace(/[\s\-_]/g, '');
+
+        let baseData = recipeRes.data || [];
+        if (baseData.length === 0) {
+          baseData = legacyRes.data || [];
+        }
+
+        const parsed = baseData.map(row => {
+          // Find the underlying legacy row to extract the rich strategy JSON
+          const normName = normalize(row.recipe_name || row.dish_name);
+          const legacyMatch = (legacyRes.data || []).find(l =>
+            normalize(l.dish_name) === normName ||
+            normalize(l.recipe_json?.id) === normalize(row.recipe_id)
+          );
+
+          // Extract rich strategy block from the legacy presentation JSON
+          let strategy = {};
+          if (legacyMatch && legacyMatch.presentation_json) {
+            const pjson = typeof legacyMatch.presentation_json === 'string' ? JSON.parse(legacyMatch.presentation_json) : legacyMatch.presentation_json;
+            if (pjson.strategy) strategy = pjson.strategy;
+          }
+
+          const r = typeof row.recipe_json === 'string' ? JSON.parse(row.recipe_json) : (row.recipe_json || {});
+
+          // Formulate the richest possible method breakdown
+          const baseMethod = Array.isArray(row.method) && row.method.length > 0 ? row.method : (r.method || []);
+          let richMethod = baseMethod;
+          if (strategy.method || strategy.tips || strategy.temp) {
+            richMethod = [
+              strategy.method ? `Methodology: ${strategy.method}` : '',
+              strategy.temp ? `Temp Control: ${strategy.temp}` : '',
+              strategy.tips ? `Chef Tips: ${strategy.tips}` : ''
+            ].filter(Boolean);
+          }
+
+          return {
+            ...row,
+            ...r,
+            id: row.recipe_id || r.id || row.id,
+            name: row.recipe_name || r.name || row.dish_name || r.title,
+            baseYield: row.base_yield || r.baseYield || 1,
+            unit: row.yield_unit || r.unit || 'kg',
+            ingredients: Array.isArray(row.ingredients) && row.ingredients.length > 0
+              ? row.ingredients
+              : (Array.isArray(r.ingredients) ? r.ingredients : []),
+            method: richMethod.length > 0 ? richMethod : ['Standard preparation.'],
+            bulkMethod: Array.isArray(row.bulk_method) && row.bulk_method.length > 0 ? row.bulk_method : (strategy.tips ? [strategy.tips] : []),
+            // Prioritize the deep strategy narrative, then standard note
+            note: strategy.note || row.note || r.note || 'No operational notes provided.',
+            dishStyle: row.dish_style || r.dishStyle || r.style || 'stewed',
+            dishCategory: row.tier || row.cuisine_type || r.dishCategory || r.category || 'Tier 2 (Daily)',
+            production_strategy: row.production_strategy || 'dynamic_daily',
+            production_batch_size: row.production_batch_size || null
+          };
+        });
+
+        setRecipes(parsed);
+      } catch (err) {
+        console.error("Fetch failure:", err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    getRecipes();
+  }, [clientSlug]);
+
+  // Secondary initialization for production targets
+  useEffect(() => {
+    if (recipes.length > 0) {
+      if (!selectedId || !recipes.find(r => r.id === selectedId)) {
+        setSelectedId(recipes[0].id);
+      }
+      const initialDemand = calculateBOM(recipes, volumeFocus, menuMix, getPortionSize);
+      setDailyProduction(initialDemand);
+    }
+  }, [recipes]);
+
+  // Apply Static Theme & Dynamic Brand Colors
+  useEffect(() => {
+    document.documentElement.style.setProperty('--app-accent', config.accentColor);
+    document.documentElement.style.setProperty('--app-accent-hover', `${config.accentColor}dd`);
+  }, [config]);
+
+  // Reactive Sync: Update yields when Master Rules (Volume/Mix/Portion) change
+  useEffect(() => {
+    if (recipes.length === 0) return;
+    const updatedDemand = calculateBOM(recipes, volumeFocus, menuMix, getPortionSize);
+    setDailyProduction(updatedDemand);
+  }, [volumeFocus, menuMix, mainPortionSize, sidePortionSize, starterPortionSize]);
+
+  // CALCULATE BOM EXPLOSION
+  const explodedTargets = useMemo(() => {
+    // dailyProduction holds the current state overrides.
+    // To ensure recursive rules ALWAYS apply if a user manually changes "magic soy" top level demand,
+    // we pass the entire updated dailyProduction through a secondary BOM cascade if needed.
+    // But for now, dailyProduction ALREADY contains the exploded values initialized by Settings.
+    return dailyProduction;
+  }, [dailyProduction]);
+
+  const activeRecipe = useMemo(() =>
+    recipes.find(r => r.id === selectedId) || recipes[0],
+    [selectedId, recipes]);
+
+  const currentYieldValue = activeRecipe ? dailyProduction[selectedId] : 0;
+
+  const currentPortionCount = useMemo(() => {
+    if (!activeRecipe) return 0;
+    const pSize = getPortionSize(activeRecipe);
+    if (!pSize || pSize === 0) return 0;
+    return Math.round(currentYieldValue / pSize);
+  }, [currentYieldValue, activeRecipe, getPortionSize]);
+
+  const standardBatchYield = useMemo(() => {
+    if (!activeRecipe) return 0;
+    const style = (activeRecipe.dishStyle || activeRecipe.style || '').toLowerCase();
+    const cat = (activeRecipe.dishCategory || '').toLowerCase();
+    const name = (activeRecipe.name || '').toLowerCase();
+    const isPrep = ['prep', 'base', 'stock'].includes(style) || ['base', 'stock'].includes(cat) || name.includes('base');
+
+    if (isPrep) {
+      return parseFloat(activeRecipe.production_batch_size) || parseFloat(activeRecipe.baseYield) || 1;
+    }
+    return portionsPerBatch * getPortionSize(activeRecipe);
+  }, [activeRecipe, portionsPerBatch, getPortionSize]);
+
+  const totalWeightForActive = useMemo(() => {
+    if (!activeRecipe) return { v: 0, u: 'g' };
+    const pWeight = getPortionWeight(activeRecipe);
+    const unit = (activeRecipe.unit || '').toLowerCase();
+    if (unit.includes('portion')) {
+      return formatDisplay(currentYieldValue * pWeight, 'g');
+    }
+    return formatDisplay(currentYieldValue, activeRecipe.unit);
+  }, [activeRecipe, currentYieldValue, getPortionWeight]);
+
+  const isBulkMode = useMemo(() => {
+    // Volume focus of 300 or 600+ automatically triggers bulk mode for efficiency
+    if (volumeFocus >= 300) return true;
+    return currentYieldValue >= (activeRecipe?.bulkThreshold || 50);
+  }, [currentYieldValue, activeRecipe, volumeFocus]);
+
+
+  const handleRoundAndFix = () => {
+    if (!activeRecipe) return;
+
+    let bestYield = currentYieldValue;
+    let minTotalVariance = Infinity;
+
+    // Search range: ±15% of current yield.
+    const searchRange = Math.max(activeRecipe.baseYield * 0.1, currentYieldValue * 0.15);
+    const step = activeRecipe.baseYield * 0.01; // Fine granularity
+
+    for (let y = Math.max(0.1, currentYieldValue - searchRange); y <= currentYieldValue + searchRange; y += step) {
+      const f = y / activeRecipe.baseYield;
+      let variance = 0;
+
+      activeRecipe.ingredients.forEach(ing => {
+        // Only optimize measurable quantities
+        if (!ing.qty || ing.qty <= 0) return;
+
+        const ideal = ing.qty * f;
+        let displayUnit = (ing.unit || '').toLowerCase();
+        let displayVal = ideal;
+
+        // Match formatQuantity logic for accurate chefRound targeting
+        if (displayUnit === 'g' && ideal >= 1000) { displayVal = ideal / 1000; displayUnit = 'kg'; }
+        else if (displayUnit === 'ml' && ideal >= 1000) { displayVal = ideal / 1000; displayUnit = 'L'; }
+
+        const roundedDisplay = chefRound(displayVal, displayUnit);
+
+        // Calculate absolute mathematical distance from the rounded 'clean' number
+        // High penalty for decimal values (we want 150g, not 151.2g)
+        const error = Math.abs(displayVal - roundedDisplay) / (displayVal || 1);
+
+        // Add additional penalty if the rounded number itself is not a whole integer
+        // (This heavily pushes the solver toward choosing a yield that makes ingredients land on round integers like 50, 100, instead of 53.5)
+        const integerPenalty = Number.isInteger(roundedDisplay) ? 0 : 0.5;
+
+        variance += (error + integerPenalty);
+      });
+
+      if (variance < minTotalVariance) {
+        minTotalVariance = variance;
+        bestYield = y;
+      }
+    }
+
+    setDailyProduction({ ...dailyProduction, [selectedId]: Number(bestYield.toFixed(2)) });
+  };
+
+  const handleReverseScale = (ing, newQty) => {
+    if (!activeRecipe || !newQty || newQty <= 0) return;
+    // factor = newQty / baseQty
+    const factor = newQty / ing.qty;
+    const newYield = activeRecipe.baseYield * factor;
+    setDailyProduction({ ...dailyProduction, [selectedId]: Number(newYield.toFixed(2)) });
+    setEditingIngId(null);
+  };
+
+  const applyMultiplier = (m) => {
+    const updated = { ...dailyProduction };
+    Object.keys(updated).forEach(id => {
+      // If currently zero, we default to 1 batch * m
+      const current = updated[id] || 0;
+      if (current === 0) {
+        const r = recipes.find(rec => rec.id === id);
+        if (r) updated[id] = Number((r.baseYield * m).toFixed(2));
+      } else {
+        updated[id] = Number((current * m).toFixed(2));
+      }
+    });
+    setDailyProduction(updated);
+  };
+
+
+
 
   // [LOCKED] CORE MARKET AGGREGATION ENGINE - DO NOT MODIFY
   // Handles recursive sub-recipes and unit normalization
@@ -379,23 +466,26 @@ const SopMain = () => {
     };
 
     const processRecipe = (recipeId, yieldRequested, seen = new Set(), depth = 0) => {
-      // Loop Protection
-      if (depth > 6 || seen.has(recipeId)) return;
+      // Loop Protection & Zero Safety
+      if (depth > 8 || seen.has(recipeId) || !yieldRequested || yieldRequested <= 0) return;
       seen.add(recipeId);
 
       const recipe = recipes.find(r => r.id === recipeId);
-      if (!recipe) return;
+      if (!recipe || !recipe.ingredients || !Array.isArray(recipe.ingredients)) return;
+
+      const safeBaseYield = parseFloat(recipe.baseYield) || 1;
 
       recipe.ingredients.forEach(ing => {
+        if (!ing) return;
         const subRecipeId = SKU_TO_RECIPE_MAP[ing.sku] || recipes.find(r => r.id === ing.sku)?.id;
-        let qtyToProcess = ing.qty;
+        let qtyToProcess = parseFloat(ing.qty) || 0;
+        if (qtyToProcess <= 0) return;
 
         if (subRecipeId) {
           const subRecipe = recipes.find(r => r.id === subRecipeId);
           if (subRecipe) {
             const subUnit = (subRecipe.unit || '').toLowerCase();
             const reqUnit = (ing.unit || '').toLowerCase();
-            // Normalization: Grams requested from a Kilogram recipe / ml requested from a Liter recipe
             const isSubMetric = subUnit === 'kg' || subUnit === 'l' || subUnit === 'liter' || subUnit === 'litre';
             const isReqSmall = reqUnit === 'g' || reqUnit === 'ml';
 
@@ -403,11 +493,11 @@ const SopMain = () => {
               qtyToProcess /= 1000;
             }
           }
-          const scaledSubYield = (qtyToProcess / recipe.baseYield) * yieldRequested;
+          const scaledSubYield = (qtyToProcess / safeBaseYield) * yieldRequested;
           processRecipe(subRecipeId, scaledSubYield, new Set(seen), depth + 1);
         } else {
           // Leaf ingredient aggregation
-          let baseQty = ing.qty;
+          let baseQty = qtyToProcess;
           let baseUnit = ing.unit || 'units';
           const u = baseUnit.toLowerCase();
 
@@ -420,7 +510,7 @@ const SopMain = () => {
             baseUnit = 'ml';
           }
 
-          const scaledQty = (baseQty / recipe.baseYield) * yieldRequested;
+          const scaledQty = (baseQty / safeBaseYield) * yieldRequested;
           const sku = ing.sku || `${ing.name.replace(/\s+/g, '-').toUpperCase()}-${baseUnit}`;
 
           if (!totals[sku]) {
@@ -444,10 +534,6 @@ const SopMain = () => {
     return grouped;
   }, [dailyProduction, recipes]);
 
-  const formatDisplay = (val, unit) => {
-    const { val: v, unit: u } = formatQuantity(val, unit);
-    return { v, u };
-  };
 
   const handleCsvDownload = () => {
     const factor = currentYieldValue / activeRecipe.baseYield;
@@ -623,7 +709,7 @@ const SopMain = () => {
                             onChange={(e) => setPortionsPerBatch(parseInt(e.target.value) || 0)}
                             className="bg-app-surface border border-app-border rounded p-2 w-20 text-right font-black text-2xl text-app-accent outline-none focus:border-app-accent"
                           />
-                          <span className="text-[10px] font-black text-app-muted">PCS</span>
+                          <span className="text-[10px] font-black text-app-muted">PORTIONS</span>
                         </div>
                         <Package className="absolute -bottom-2 -right-2 text-app-accent/5" size={80} />
                       </div>
@@ -756,26 +842,23 @@ const SopMain = () => {
                   <div className="flex items-center gap-2">
                     <input
                       type="number"
-                      step={portionMode ? "1" : "0.5"}
+                      step={portionMode ? "1" : "0.1"}
                       min="0"
                       value={portionMode
                         ? currentPortionCount
-                        : (currentYieldValue / (portionsPerBatch * getPortionSize(activeRecipe)) || 0).toFixed(1)
+                        : (currentYieldValue / standardBatchYield || 0).toFixed(1)
                       }
                       onChange={(e) => {
                         const val = parseFloat(e.target.value) || 0;
-                        const pSize = getPortionSize(activeRecipe);
                         if (portionMode) {
-                          const finalPortions = val;
+                          const pSize = getPortionSize(activeRecipe);
                           if (activeRecipe.unit?.toLowerCase().includes('portion')) {
-                            setDailyProduction({ ...dailyProduction, [selectedId]: finalPortions });
+                            setDailyProduction({ ...dailyProduction, [selectedId]: val });
                           } else {
-                            const requiredYield = finalPortions * pSize;
-                            setDailyProduction({ ...dailyProduction, [selectedId]: Number(requiredYield.toFixed(2)) });
+                            setDailyProduction({ ...dailyProduction, [selectedId]: Number((val * pSize).toFixed(2)) });
                           }
                         } else {
-                          // REDEFINED BATCH: 1 Batch = portionsPerBatch * portionSize
-                          const requiredYield = val * (portionsPerBatch * pSize);
+                          const requiredYield = val * standardBatchYield;
                           setDailyProduction({ ...dailyProduction, [selectedId]: Number(requiredYield.toFixed(2)) });
                         }
                       }}
@@ -794,16 +877,24 @@ const SopMain = () => {
                   </div>
                 </div>
 
-                {/* Portion Intelligence Display */}
+                {/* Kitchen Intelligence Display */}
                 <div className="flex flex-col justify-center border-l border-app-border pl-6">
                   <div className="flex items-center gap-2">
                     <Scale size={12} className="text-app-accent opacity-50" />
                     <div className="text-[14px] font-black text-app-text uppercase">
-                      {formatDisplay(currentYieldValue, activeRecipe.unit).v} <span className="text-app-accent">{formatDisplay(currentYieldValue, activeRecipe.unit).u}</span>
+                      Yield Target: {formatDisplay(currentYieldValue, activeRecipe.unit).v} <span className="text-app-accent">{formatDisplay(currentYieldValue, activeRecipe.unit).u}</span>
+                      {(activeRecipe.unit || '').toLowerCase().includes('portion') && (
+                        <span className="block text-[10px] text-app-accent mt-0.5">Total weight: {totalWeightForActive.v}{totalWeightForActive.u}</span>
+                      )}
                     </div>
                   </div>
-                  <div className="text-[8px] font-bold text-app-muted uppercase tracking-tight">
-                    Target Ops Volume: <span className="text-white">{volumeFocus} ppl</span> <span className="text-app-accent ml-1">(1 port. = {getPortionSize(activeRecipe)}g/ml)</span>
+                  <div className="text-[9px] font-bold text-app-muted uppercase tracking-tight leading-tight">
+                    Standard Batch Size: <span className="text-white">{formatDisplay(standardBatchYield, activeRecipe.unit).v} {formatDisplay(standardBatchYield, activeRecipe.unit).u}</span>
+                    <span className="text-app-accent ml-1 block mt-0.5">
+                      {['prep', 'base', 'stock'].includes((activeRecipe.dishStyle || activeRecipe.style || '').toLowerCase())
+                        ? '(Base Yield for 1 Standard Batch)'
+                        : `(${portionsPerBatch} portions @ ${formatDisplay(getPortionWeight(activeRecipe), 'g').v}${formatDisplay(getPortionWeight(activeRecipe), 'g').u}/per portion)`}
+                    </span>
                   </div>
                 </div>
 
@@ -811,9 +902,9 @@ const SopMain = () => {
                   <div className="flex gap-1">
                     <button
                       onClick={() => {
-                        const reset = {};
-                        recipes.forEach(r => reset[r.id] = r.baseYield);
-                        setDailyProduction(reset);
+                        const baseYields = {};
+                        recipes.forEach(r => baseYields[r.id] = (parseFloat(r.baseYield) || 1));
+                        setDailyProduction(baseYields);
                       }}
                       className="bg-app-bg border border-app-border hover:border-app-accent text-[8px] font-black uppercase px-2 py-1 rounded transition-colors text-app-muted hover:text-app-text"
                     >
@@ -821,30 +912,48 @@ const SopMain = () => {
                     </button>
                     <button
                       onClick={() => {
-                        const zero = {};
-                        recipes.forEach(r => zero[r.id] = 0);
-                        setDailyProduction(zero);
+                        const batch = {};
+                        recipes.forEach(r => {
+                          const style = (r.dishStyle || r.style || '').toLowerCase();
+                          const cat = (r.dishCategory || '').toLowerCase();
+                          const isPrep = ['prep', 'base', 'stock'].includes(style) || ['base', 'stock'].includes(cat);
+                          if (isPrep) {
+                            batch[r.id] = parseFloat(r.production_batch_size) || parseFloat(r.baseYield) || 1;
+                          } else {
+                            // If unit is Portion, getPortionSize returns 1, so target is portionsPerBatch count
+                            // If unit is kg/g, getPortionSize returns grams, so target is total weight
+                            batch[r.id] = portionsPerBatch * getPortionSize(r);
+                          }
+                        });
+                        setDailyProduction(batch);
                       }}
-                      className="bg-app-bg border border-app-border hover:border-app-danger/20 hover:text-app-danger text-[8px] font-black uppercase px-2 py-1 rounded transition-colors text-app-muted"
+                      className="bg-app-bg border border-app-border hover:border-app-accent/50 hover:text-app-accent text-[8px] font-black uppercase px-2 py-1 rounded transition-colors text-app-muted"
                     >
-                      Zero All
+                      Batch All
                     </button>
                     <button
                       onClick={() => {
                         const allScaled = { ...dailyProduction };
+                        const currentInputVal = portionMode
+                          ? currentPortionCount
+                          : (currentYieldValue / standardBatchYield || 0);
 
                         recipes.forEach(r => {
+                          const style = (r.dishStyle || r.style || '').toLowerCase();
+                          const cat = (r.dishCategory || '').toLowerCase();
+                          const isPrep = ['prep', 'base', 'stock'].includes(style) || ['base', 'stock'].includes(cat);
+
                           if (portionMode) {
-                            // In portion mode: set every recipe to the same portion count
                             if (r.unit?.toLowerCase().includes('portion')) {
-                              allScaled[r.id] = currentPortionCount;
+                              allScaled[r.id] = currentInputVal;
                             } else {
-                              allScaled[r.id] = Number((currentPortionCount * getPortionSize(r)).toFixed(2));
+                              allScaled[r.id] = Number((currentInputVal * getPortionSize(r)).toFixed(2));
                             }
                           } else {
-                            // In production mode: apply the current batch count multiplier
-                            const currentBatchFactor = currentYieldValue / (volumeFocus * getPortionSize(activeRecipe)) || 0;
-                            allScaled[r.id] = Number((currentBatchFactor * (volumeFocus * getPortionSize(r))).toFixed(2));
+                            let thisStandardBatch = isPrep
+                              ? (parseFloat(r.production_batch_size) || parseFloat(r.baseYield) || 1)
+                              : (portionsPerBatch * getPortionSize(r));
+                            allScaled[r.id] = Number((currentInputVal * thisStandardBatch).toFixed(2));
                           }
                         });
                         setDailyProduction(allScaled);
@@ -986,16 +1095,19 @@ const SopMain = () => {
 
             {/* PREP STRATEGY: Directly under ingredients, heavily detailed */}
             <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-              <div className="md:col-span-12 bg-app-surface border border-app-border rounded-lg p-4 relative overflow-hidden">
-                <div className="flex gap-2 items-center mb-2 font-black text-[10px] uppercase text-app-accent tracking-widest border-b border-app-border/50 pb-2">
-                  <Info size={14} /> Critical Prep Strategy & Detailed Intelligence
+              {activeRecipe.note && activeRecipe.note !== 'No operational notes provided.' && (
+                <div className="md:col-span-12 bg-app-surface border border-app-border rounded-lg p-4 relative overflow-hidden">
+                  <div className="flex gap-2 items-center mb-2 font-black text-[10px] uppercase text-app-accent tracking-widest border-b border-app-border/50 pb-2">
+                    <Info size={14} /> Critical Prep Strategy & Detailed Intelligence
+                  </div>
+                  <div className="prose prose-invert max-w-none">
+                    <p className="text-xs font-medium leading-relaxed text-app-text italic bg-app-bg/50 p-3 rounded border border-app-border/30 shadow-inner">
+                      <i className="fa-solid fa-quote-left text-app-accent opacity-50 mr-2"></i>
+                      {activeRecipe.note}
+                    </p>
+                  </div>
                 </div>
-                <div className="prose prose-invert max-w-none">
-                  <p className="text-xs font-medium leading-relaxed text-app-text italic bg-app-bg/50 p-3 rounded border border-app-border/30">
-                    "{activeRecipe.note}"
-                  </p>
-                </div>
-              </div>
+              )}
 
               {/* METHOD / INSTRUCTIONS */}
               <div className="md:col-span-8 bg-app-surface border border-app-border rounded-lg p-4">

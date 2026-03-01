@@ -23,45 +23,113 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {} }) =
     useEffect(() => {
         async function fetchBoardData() {
             setLoading(true);
+            try {
+                // Fetch from multiple tables to find the best task data source
+                const [legacyRes, presentationRes, recipeRes, boardTasksRes] = await Promise.all([
+                    supabase.from('consulting_sops').select('*').eq('client_id', clientId),
+                    supabase.from('sop_presentations').select('*').eq('client_id', clientId),
+                    supabase.from('sop_recipes').select('*').eq('client_id', clientId),
+                    supabase.from('sop_board_tasks').select('*').eq('client_id', clientId)
+                ]);
 
-            // Fetch both Board Tasks and Full Recipe Metadata
-            const [boardRes, recipeRes] = await Promise.all([
-                supabase.from('sop_board_tasks').select('*').eq('client_id', clientId),
-                supabase.from('consulting_sops').select('*').eq('client_id', clientId)
-            ]);
+                const legacyData = legacyRes.data || [];
+                const presentationData = presentationRes.data || [];
+                const recipesData = recipeRes.data || [];
+                const sopBoardTasksData = boardTasksRes.data || [];
 
-            if (boardRes.error || recipeRes.error) {
-                console.error('Error fetching data:', boardRes.error || recipeRes.error);
-            } else {
-                const recipesRaw = (recipeRes.data || []).map(row => {
+                if (legacyData.length === 0 && presentationData.length === 0 && sopBoardTasksData.length === 0) {
+                    setRecipes([]);
+                    return;
+                }
+
+                const normalize = (s) => (s || '').toLowerCase().trim().replace(/^\d+[\s.\-_]*/, '').replace(/[\s\-_]/g, '');
+
+                // Build enriched recipe metadata
+                const recipesMap = new Map();
+
+                // Start with legacy
+                legacyData.forEach(row => {
                     const r = typeof row.recipe_json === 'string' ? JSON.parse(row.recipe_json) : row.recipe_json;
-                    return { ...r, db_id: row.id };
+                    const id = r?.id || row.id;
+                    recipesMap.set(normalize(r?.name || row.dish_name), {
+                        ...(r || {}),
+                        id: id,
+                        name: r?.name || row.dish_name,
+                        baseYield: r?.baseYield || 1,
+                        unit: r?.unit || 'kg',
+                        ingredients: Array.isArray(r?.ingredients) ? r.ingredients : [],
+                        production_strategy: row.production_strategy || 'dynamic_daily',
+                        production_batch_size: row.production_batch_size || null
+                    });
+                    recipesMap.set(normalize(id), recipesMap.get(normalize(r?.name || row.dish_name)));
                 });
 
-                const boardTasks = (boardRes.data || []).map(row => {
-                    const taskData = typeof row.tasks_json === 'string' ? JSON.parse(row.tasks_json) : row.tasks_json;
+                // Enrich with new automation metadata
+                recipesData.forEach(row => {
+                    const normName = normalize(row.recipe_name);
+                    const normId = normalize(row.recipe_id);
+                    const existing = recipesMap.get(normName) || recipesMap.get(normId) || {};
 
-                    // IMPROVED: Robust matching for prefixes like "21. Flour Mix"
-                    const normalize = (s) => (s || '').toLowerCase().replace(/^\d+\.\s*/, '').replace(/[\s-]/g, '');
-                    const rowNameNorm = normalize(row.dish_name);
+                    const updated = {
+                        ...existing,
+                        ...row,
+                        id: row.recipe_id,
+                        name: row.recipe_name,
+                        baseYield: row.base_yield || existing.baseYield || 1,
+                        unit: row.yield_unit || existing.unit || 'kg',
+                        ingredients: Array.isArray(row.ingredients) && row.ingredients.length > 0 ? row.ingredients : existing.ingredients,
+                        production_strategy: row.production_strategy || existing.production_strategy || 'dynamic_daily'
+                    };
+                    recipesMap.set(normName, updated);
+                    recipesMap.set(normId, updated);
+                });
 
-                    const meta = recipesRaw.find(r => {
-                        const rNameNorm = normalize(r.name || r.title || '');
-                        const rIdNorm = normalize(r.id || '');
-                        return rNameNorm === rowNameNorm || rIdNorm === rowNameNorm;
-                    });
+                // Build board tasks by merging presentation data and legacy data
+                // Prefer presentation data if it exists and has more than just meta/title
+                const boardsMap = new Map();
 
+                const mergeTaskSource = (dish_name, json) => {
+                    const data = typeof json === 'string' ? JSON.parse(json) : json;
+                    if (!data) return;
+
+                    const norm = normalize(dish_name);
+                    const existing = boardsMap.get(norm);
+
+                    // Logic check: does this JSON have actual tasks or just meta?
+                    const hasTasks = data.weekly || data.morning || data.service;
+
+                    if (!existing || (!existing.hasTasks && hasTasks)) {
+                        boardsMap.set(norm, {
+                            dish_name,
+                            data: data,
+                            hasTasks: !!hasTasks,
+                            staff_role: data.staff || 'js'
+                        });
+                    }
+                };
+
+                presentationData.forEach(row => mergeTaskSource(row.dish_name, row.presentation_json));
+                sopBoardTasksData.forEach(row => mergeTaskSource(row.dish_name, row.tasks_json));
+                legacyData.forEach(row => mergeTaskSource(row.dish_name, row.presentation_json));
+
+                const boardTasks = Array.from(boardsMap.values()).map(row => {
+                    const meta = recipesMap.get(normalize(row.dish_name)) || {};
                     return {
-                        id: row.id,
+                        id: meta.id || row.dish_name,
                         dish_name: row.dish_name,
                         staff_role: row.staff_role,
-                        data: taskData,
-                        meta: meta || {}
+                        data: row.data,
+                        meta: meta,
+                        hasTasks: row.hasTasks
                     };
                 });
+
                 setRecipes(boardTasks);
+            } catch (err) {
+                console.error("Board fetch error:", err);
+            } finally {
+                setLoading(false);
             }
-            setLoading(false);
         }
         fetchBoardData();
     }, [clientId]);
@@ -98,19 +166,18 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {} }) =
     // ── BOM Helper ────────────────────────────────────────────────────────────
     const renderBOM = (recipe) => {
         const recipeId = recipe.meta?.id;
-        const portions = productionTargets[recipeId] || 0;
-        if (portions === 0) return null;
+        const targetYield = productionTargets[recipeId] || 0;
+        if (targetYield === 0) return null;
 
         const ingredients = recipe.meta?.ingredients || [];
         if (ingredients.length === 0) return null;
 
         const baseYield = recipe.meta?.baseYield || 1;
-        const isTier1 = recipe.meta?.tier?.includes('Tier 1');
+        const strategy = recipe.meta?.production_strategy || 'dynamic_daily';
+        const isBatchStrategy = strategy === 'foundational' || strategy === 'fixed_batch';
 
-        // Batch Logic: Round UP to nearest full batch for foundations
-        const scaleFactor = isTier1
-            ? Math.ceil(portions / baseYield) // e.g. 40L target / 11L base = 4 batches
-            : portions / baseYield;
+        // Base recipe scaling calculation
+        const scaleFactor = targetYield / baseYield;
 
         // Show top 5 ingredients
         const mainIngs = ingredients.filter(i => i.qty > 0).slice(0, 5);
@@ -118,13 +185,11 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {} }) =
         return (
             <div className="bom-header">
                 <div className="bom-title">
-                    {isTier1 ? `REQUIRED FOR ${scaleFactor} BATCHES:` : 'REQUIRED MATERIALS:'}
+                    {isBatchStrategy ? `REQUIRED FOR BATCH PRODUCTION:` : 'REQUIRED MATERIALS:'}
                 </div>
                 <div className="bom-items">
                     {mainIngs.map((ing, i) => {
-                        const scaledVal = isTier1
-                            ? ing.qty * scaleFactor
-                            : ing.qty * scaleFactor;
+                        const scaledVal = ing.qty * scaleFactor;
                         return (
                             <span key={i} className="bom-pill">
                                 {formatValue(scaledVal, ing.unit)} {translateIngredient(ing.name)}
@@ -144,15 +209,39 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {} }) =
         }
         return processedLabel;
     };
+    // Helper to extract flat task arrays from nested or flat presentation JSON
+    const getWeeklyTasks = (data) => {
+        if (!data?.weekly) return [];
+        if (Array.isArray(data.weekly)) return data.weekly;
+        // Nested: { batch: [...], buffer: [...] }
+        return [...(data.weekly.batch || []), ...(data.weekly.buffer || [])];
+    };
+    const getMorningTasks = (data) => {
+        if (!data?.morning) return [];
+        if (Array.isArray(data.morning)) return data.morning;
+        return data.morning.tasks || [];
+    };
+    const getForwardTasks = (data) => {
+        if (!data?.morning) return [];
+        if (Array.isArray(data.morning)) return [];
+        return data.morning.forward || [];
+    };
+    const getServiceTasks = (data) => {
+        if (!data?.service) return [];
+        if (Array.isArray(data.service)) return data.service;
+        // Nested: { setup: [...], garnish: [...] }
+        return [...(data.service.setup || []), ...(data.service.garnish || [])];
+    };
+
     const stats = useMemo(() => {
         let total = 0;
         let done = 0;
 
         recipes.forEach(r => {
             const p = r.data || {};
-            const weeklyCount = (p.weekly?.length || 0);
-            const dailyCount = (p.morning?.tasks?.length || 0) + (p.morning?.forward?.length || 0);
-            const serviceCount = (p.service?.length || 0);
+            const weeklyCount = getWeeklyTasks(p).length;
+            const dailyCount = getMorningTasks(p).length + getForwardTasks(p).length;
+            const serviceCount = getServiceTasks(p).length;
 
             total += weeklyCount + dailyCount + serviceCount;
 
@@ -217,10 +306,12 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {} }) =
     const getAbsorbedTasks = (parentSku, category) => {
         const subRecipes = recipes.filter(r => r.meta?.is_sub_recipe && r.meta?.parent_sku === parentSku);
         return subRecipes.flatMap(sub => {
-            const tasks = category === 'morning-fwd' ? (sub.data?.morning?.forward || []) :
-                category === 'morning-std' ? (sub.data?.morning?.tasks || []) :
-                    category === 'weekly' ? (sub.data?.weekly || []) :
-                        (sub.data?.service || []);
+            const tasks = category === 'morning-fwd' ? getForwardTasks(sub.data) :
+                category === 'morning-std' ? getMorningTasks(sub.data) :
+                    category === 'weekly' ? getWeeklyTasks(sub.data) :
+                        getServiceTasks(sub.data);
+
+            if (!Array.isArray(tasks)) return [];
 
             return tasks.map(t => ({
                 label: typeof t === 'string' ? `[${sub.dish_name}] ${t}` : { ...t, label: `[${sub.dish_name}] ${t.label}` },
@@ -485,7 +576,7 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {} }) =
                     </div>
                     <div className="col-content">
                         {visibleMainRecipes.map(r => {
-                            const weeklyTasks = r.data?.weekly || [];
+                            const weeklyTasks = getWeeklyTasks(r.data);
                             const absorbed = getAbsorbedTasks(r.meta?.id || r.dish_name.toLowerCase().replace(/ /g, '-'), 'weekly');
                             if (weeklyTasks.length === 0 && absorbed.length === 0) return null;
                             const isActive = (productionTargets[r.meta?.id] || 0) > 0;
@@ -512,30 +603,31 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {} }) =
                         {visibleMainRecipes
                             .filter(r => (productionTargets[r.meta?.id] || 0) > 0) // AUTO-FILTER FOR DAILY
                             .map(r => {
-                                const standardTasks = r.data?.morning?.tasks || [];
-                                const forwardTasks = r.data?.morning?.forward || [];
+                                const standardTasks = getMorningTasks(r.data);
+                                const forwardTasks = getForwardTasks(r.data);
                                 const absorbedStd = getAbsorbedTasks(r.meta?.id || r.dish_name.toLowerCase().replace(/ /g, '-'), 'morning-std');
                                 const absorbedFwd = getAbsorbedTasks(r.meta?.id || r.dish_name.toLowerCase().replace(/ /g, '-'), 'morning-fwd');
 
                                 if (standardTasks.length === 0 && forwardTasks.length === 0 && absorbedStd.length === 0 && absorbedFwd.length === 0) return null;
 
                                 const recipeId = r.meta?.id;
-                                const portions = productionTargets[recipeId] || 0;
+                                const targetYield = productionTargets[recipeId] || 0;
                                 const unit = r.meta?.unit || 'PORTIONS';
-                                const isActive = portions > 0;
+                                const isActive = targetYield > 0;
 
-                                const isTier1 = r.meta?.tier?.includes('Tier 1');
-                                const baseYield = r.meta?.baseYield || 1;
-                                const batchCount = Math.ceil(portions / baseYield);
+                                const strategy = r.meta?.production_strategy || 'dynamic_daily';
+                                const isBatchStrategy = strategy === 'foundational' || strategy === 'fixed_batch';
+                                const batchSize = parseFloat(r.meta?.production_batch_size) || parseFloat(r.meta?.baseYield) || 1;
+                                const batchCount = Math.ceil(targetYield / batchSize);
 
                                 return (
                                     <div key={r.id} className={`recipe-box ${isActive ? 'active-box' : ''}`}>
                                         <div className="recipe-control" style={{ borderLeftColor: 'var(--daily-amber)' }}>
                                             <span className="recipe-name">{r.dish_name.replace(/^\d+[\s.\-_]*/, '')}</span>
                                             <div className="text-[11px] font-black text-var(--daily-amber) tracking-widest px-2 py-1 border border-[#3f3f46] rounded bg-[#000]">
-                                                {isTier1
-                                                    ? `TARGET: ${batchCount} BATCH${batchCount > 1 ? 'ES' : ''} (${portions}${unit})`
-                                                    : `TARGET: ${portions} ${unit.toUpperCase()}`
+                                                {isBatchStrategy
+                                                    ? `TARGET: ${batchCount} BATCH${batchCount > 1 ? 'ES' : ''} (${targetYield}${unit})`
+                                                    : `TARGET: ${targetYield} ${unit.toUpperCase()}`
                                                 }
                                             </div>
                                         </div>
@@ -562,7 +654,7 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {} }) =
                     </div>
                     <div className="col-content">
                         {visibleMainRecipes.map(r => {
-                            const serviceTasks = r.data?.service || [];
+                            const serviceTasks = getServiceTasks(r.data);
                             const absorbed = getAbsorbedTasks(r.meta?.id || r.dish_name.toLowerCase().replace(/ /g, '-'), 'service');
                             if (serviceTasks.length === 0 && absorbed.length === 0) return null;
                             const isActive = (productionTargets[r.meta?.id] || 0) > 0;
@@ -579,6 +671,43 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {} }) =
                     </div>
                 </div>
             </div>
+
+            {stats.total === 0 && (
+                <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-10">
+                    <div className="bg-zinc-900 border border-zinc-800 p-8 rounded-xl max-w-2xl w-full">
+                        <h2 className="text-xl font-black text-white uppercase mb-4 flex items-center gap-2">
+                            <i className="fa-solid fa-triangle-exclamation text-amber-500"></i> Data Truncation Detected
+                        </h2>
+                        <p className="text-zinc-400 text-sm mb-6 leading-relaxed">
+                            The application is connected but the database records are missing the task structures (weekly, morning, service).
+                            This is why the board columns are empty.
+                        </p>
+
+                        <div className="bg-black/50 p-4 rounded border border-zinc-700 mb-6 overflow-auto max-h-40">
+                            <span className="text-[10px] uppercase font-black text-zinc-500 mb-2 block">Foundational Data Sample (Magic Soy):</span>
+                            <pre className="text-[10px] text-app-accent">
+                                {JSON.stringify(recipes.find(r => r.dish_name.includes('Magic'))?.data || 'No recipe found', null, 2)}
+                            </pre>
+                        </div>
+
+                        <div className="space-y-3">
+                            <div className="text-xs font-bold text-white uppercase">How to fix?</div>
+                            <ol className="text-xs text-zinc-400 list-decimal ml-4 space-y-2">
+                                <li>Run <code className="text-app-accent">supabase/003_bulk_ingest_kabile_recipes.sql</code> in your Supabase SQL editor.</li>
+                                <li>This will restore 23 recipes with the FULL task JSON (not just stubs).</li>
+                                <li>Refresh this page.</li>
+                            </ol>
+                        </div>
+
+                        <button
+                            onClick={() => window.location.reload()}
+                            className="mt-8 w-full bg-app-accent text-black font-black uppercase py-3 rounded hover:opacity-90 active:scale-[0.98] transition-all"
+                        >
+                            Refresh App
+                        </button>
+                    </div>
+                </div>
+            )}
 
         </div>
     );

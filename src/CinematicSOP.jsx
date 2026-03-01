@@ -18,28 +18,53 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
     const [current, setCurrent] = useState(0);
     const { language, volumeFocus, translateIngredient } = useSettings();
 
-    // ── Fetch from sop_presentations ─────────────────────────────────────────
+    // ── Fetch from both tables and merge ───────────────────────────────────────
     useEffect(() => {
         async function fetchPresentations() {
             setLoading(true);
             setError(null);
-            const { data, error: fetchError } = await supabase
-                .from('sop_presentations')
-                .select('*')
-                .eq('client_id', clientId)
-                .order('created_at', { ascending: true });
 
-            if (fetchError) {
-                console.error('sop_presentations fetch error:', fetchError);
-                setError(fetchError.message);
-            } else {
-                const parsed = (data || []).map(row => ({
-                    id: row.id,
-                    dish_name: row.dish_name,
-                    data: typeof row.presentation_json === 'string'
-                        ? JSON.parse(row.presentation_json)
-                        : row.presentation_json,
-                }));
+            try {
+                const [presentationRes, legacyRes] = await Promise.all([
+                    supabase.from('sop_presentations').select('*').eq('client_id', clientId),
+                    supabase.from('consulting_sops').select('*').eq('client_id', clientId)
+                ]);
+
+                if (presentationRes.error) throw presentationRes.error;
+
+                const normalize = (s) => (s || '').toLowerCase().trim();
+
+                // Build a map of the richest possible presentation data
+                const richDataMap = new Map();
+
+                // 1. Load legacy data first (it contains the extremely rich 'chef logic')
+                (legacyRes.data || []).forEach(row => {
+                    const norm = normalize(row.dish_name);
+                    if (row.presentation_json) {
+                        const parsed = typeof row.presentation_json === 'string' ? JSON.parse(row.presentation_json) : row.presentation_json;
+                        richDataMap.set(norm, {
+                            id: row.id || norm,
+                            dish_name: row.dish_name,
+                            data: parsed
+                        });
+                    }
+                });
+
+                // 2. Overlay automation data, but DO NOT overwrite rich logic with stubs
+                (presentationRes.data || []).forEach(row => {
+                    const norm = normalize(row.dish_name);
+                    const existing = richDataMap.get(norm);
+                    const parsed = typeof row.presentation_json === 'string' ? JSON.parse(row.presentation_json) : row.presentation_json;
+
+                    if (!existing) {
+                        richDataMap.set(norm, { id: row.id, dish_name: row.dish_name, data: parsed });
+                    } else if (parsed && parsed.strategy && parsed.strategy.note && parsed.strategy.note.length > (existing.data?.strategy?.note?.length || 0)) {
+                        // Only overwrite if the new data is actually longer/richer
+                        richDataMap.set(norm, { id: row.id, dish_name: row.dish_name, data: parsed });
+                    }
+                });
+
+                const parsed = Array.from(richDataMap.values());
                 setSlides(parsed);
 
                 // Jump to initial dish if provided
@@ -49,8 +74,12 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
                     );
                     if (idx >= 0) setCurrent(idx);
                 }
+            } catch (fetchError) {
+                console.error('Presentations fetch error:', fetchError);
+                setError(fetchError.message);
+            } finally {
+                setLoading(false);
             }
-            setLoading(false);
         }
         fetchPresentations();
     }, [clientId, initialDishName]);
@@ -177,12 +206,19 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
           display: grid;
           grid-template-columns: 1fr 400px;
           gap: 20px;
-          padding: 30px 50px;
+          padding: 30px 50px 50px 50px;
+          overflow-y: auto;
+          overflow-x: hidden;
         }
 
+        .dashboard-grid::-webkit-scrollbar { width: 6px; }
+        .dashboard-grid::-webkit-scrollbar-track { background: var(--bg); }
+        .dashboard-grid::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        .dashboard-grid::-webkit-scrollbar-thumb:hover { background: var(--highlight); }
+
         .timeline-column {
-          display: grid;
-          grid-template-rows: repeat(3, 1fr);
+          display: flex;
+          flex-direction: column;
           gap: 15px;
         }
 

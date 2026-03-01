@@ -14,6 +14,11 @@ export const SettingsProvider = ({ children }) => {
     const [starterPortionSize, setStarterPortionSize] = useState(() => parseInt(localStorage.getItem('sop-starter-portion')) || 150);
     const [volumeFocus, setVolumeFocus] = useState(() => parseInt(localStorage.getItem('sop-volume-focus')) || 50);
     const [portionsPerBatch, setPortionsPerBatch] = useState(() => parseInt(localStorage.getItem('sop-portions-per-batch')) || 50);
+    const [menuMix, setMenuMix] = useState(() => {
+        const saved = localStorage.getItem('sop-menu-mix');
+        // Default example mix for a few key items if none exists
+        return saved ? JSON.parse(saved) : { 'korean-fire-chicken': 30, 'korean-fried-chicken': 40, 'kimchi': 100 };
+    });
     const [batchSettings, setBatchSettings] = useState(() => {
         const saved = localStorage.getItem('sop-batch-settings');
         return saved ? JSON.parse(saved) : {
@@ -58,6 +63,10 @@ export const SettingsProvider = ({ children }) => {
     useEffect(() => {
         localStorage.setItem('sop-starter-portion', starterPortionSize);
     }, [starterPortionSize]);
+
+    useEffect(() => {
+        localStorage.setItem('sop-menu-mix', JSON.stringify(menuMix));
+    }, [menuMix]);
 
     useEffect(() => {
         localStorage.setItem('sop-batch-settings', JSON.stringify(batchSettings));
@@ -161,6 +170,8 @@ export const SettingsProvider = ({ children }) => {
         setPortionsPerBatch,
         batchSettings,
         setBatchSettings,
+        menuMix,
+        setMenuMix,
         translateIngredient,
         toggleTheme: () => setTheme(prev => prev === 'dark' ? 'light' : 'dark')
     };
