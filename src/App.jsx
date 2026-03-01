@@ -33,6 +33,15 @@ import { Routes, Route, useParams, Navigate } from 'react-router-dom';
 import { useSettings } from './SettingsContext';
 
 import { calculateBOM } from './utils/BOMEngine';
+import {
+  chefRound as coreChefRound,
+  formatQuantity as coreFormatQuantity,
+  formatDisplay as coreFormatDisplay,
+  formatValue as coreFormatValue,
+  getPortionWeight as coreGetPortionWeight,
+  getPortionSize as coreGetPortionSize,
+  resolveRecipeIdBySku
+} from './core';
 
 const CLIENT_CONFIGS = {
   'kabile': {
@@ -49,30 +58,6 @@ const CLIENT_CONFIGS = {
   }
 };
 
-// [LOCKED] CORE ROUNDING LOGIC - DO NOT MODIFY WITHOUT AUDIT
-const chefRound = (val, unit = '') => {
-  if (val <= 0) return 0;
-  const u = (unit || '').toLowerCase();
-
-  // 1. Bulk Units (kg, L, Liter, lb, qt) - aggressive 0.5 steps
-  if (['kg', 'l', 'liter', 'lb', 'qt'].some(x => u.includes(x))) {
-    // User requested decimal precision (e.g. 2.3kg for 2332g)
-    const r = Math.round(val * 10) / 10;
-    return r > 0 ? r : Math.ceil(val * 10) / 10; // never zero a positive value
-  }
-
-  // 1.5 Medium Imperial Units (oz, fl oz, cup) - 0.25 steps (quarter cups/ounces)
-  if (['oz', 'fl oz', 'cup'].some(x => u.includes(x))) {
-    const fraction = Math.round(val * 4) / 4;
-    return fraction > 0 ? fraction : Math.round(val * 10) / 10;
-  }
-
-  // 2. Small Units (g, ml) - 0 / 5 rule
-  if (val < 1) return Math.ceil(val * 10) / 10;   // e.g. 0.2 -> 0.2, 0.09 -> 0.1
-  if (val < 5) return Math.round(val * 2) / 2;     // e.g. 1.44 -> 1.5
-  if (val < 10) return Math.round(val);             // e.g. 8.2 -> 8
-  return Math.round(val / 5) * 5;                   // e.g. 104 -> 105, 39 -> 40
-};
 
 const SopMain = () => {
   const [recipes, setRecipes] = useState([]);
@@ -109,117 +94,37 @@ const SopMain = () => {
   const { clientSlug } = useParams();
   const config = CLIENT_CONFIGS[clientSlug] || CLIENT_CONFIGS['kabile'];
 
-  // [LOCKED] CORE UNIT FORMATTER - DO NOT MODIFY WITHOUT AUDIT
-  // Combined value/unit formatter for ordering
-  const formatQuantity = useCallback((val, unit = '') => {
-    let displayVal = val;
-    let displayUnit = unit || '';
+  const coreSettings = useMemo(() => ({
+    mainPortionSize,
+    sidePortionSize,
+    starterPortionSize,
+    portionsPerBatch
+  }), [mainPortionSize, sidePortionSize, starterPortionSize, portionsPerBatch]);
 
-    const uMatch = displayUnit.toLowerCase();
-    if (unitSystem === 'imperial') {
-      if (uMatch === 'g' || uMatch === 'kg') {
-        let oz = displayVal;
-        if (uMatch === 'kg') oz = displayVal * 1000;
-        oz = oz * 0.035274;
-        if (oz >= 16) {
-          displayVal = oz / 16;
-          displayUnit = 'lb';
-        } else {
-          displayVal = oz;
-          displayUnit = 'oz';
-        }
-      } else if (uMatch === 'ml' || uMatch === 'l' || uMatch === 'liter') {
-        let floz = displayVal;
-        if (uMatch !== 'ml') floz = displayVal * 1000;
-        floz = floz * 0.033814;
-        if (floz >= 32) {
-          displayVal = floz / 32;
-          displayUnit = 'qt';
-        } else if (floz >= 8) {
-          displayVal = floz / 8;
-          displayUnit = 'cup';
-        } else {
-          displayVal = floz;
-          displayUnit = 'fl oz';
-        }
-      }
-    } else {
-      // Auto-scale units for metric readability
-      if (uMatch === 'g' && val >= 1000) {
-        displayVal = val / 1000;
-        displayUnit = 'kg';
-      } else if (uMatch === 'ml' && val >= 1000) {
-        displayVal = val / 1000;
-        displayUnit = 'L';
-      }
-    }
+  const chefRound = useCallback((val, unit = '') =>
+    coreChefRound(val, unit)
+    , []);
 
-    const rounded = chefRound(displayVal, displayUnit);
+  const formatQuantity = useCallback((val, unit = '') =>
+    coreFormatQuantity(val, unit, unitSystem)
+    , [unitSystem]);
 
-    // Formatting the number string
-    let valStr = rounded.toString();
-    const duLower = displayUnit.toLowerCase();
-    if (['kg', 'l', 'lb', 'qt'].some(u => duLower.includes(u))) {
-      valStr = rounded.toFixed(1).replace(/\.0$/, "");
-    }
+  const formatDisplay = useCallback((val, unit) =>
+    coreFormatDisplay(val, unit, unitSystem)
+    , [unitSystem]);
 
-    return { val: valStr, unit: displayUnit };
-  }, [unitSystem]);
+  const getPortionWeight = useCallback((recipe) =>
+    coreGetPortionWeight(recipe, coreSettings)
+    , [coreSettings]);
 
-  const formatDisplay = useCallback((val, unit) => {
-    const { val: v, unit: u } = formatQuantity(val, unit);
-    return { v, u };
-  }, [formatQuantity]);
+  const getPortionSize = useCallback((recipe) =>
+    coreGetPortionSize(recipe, coreSettings)
+    , [coreSettings]);
 
-  const formatValue = (val, unit) => {
-    const { val: v } = formatQuantity(val, unit);
-    return v;
-  };
 
   // SHARED STATE: Initialized with Base Yields
   const [dailyProduction, setDailyProduction] = useState({});
 
-  // PORTION LOGIC Helper: Intelligent weights based on dish style
-  const getPortionWeight = useCallback((recipe) => {
-    if (!recipe) return mainPortionSize;
-
-    // 1. Database Override
-    if (recipe.portionSize) return parseFloat(recipe.portionSize);
-
-    const style = (recipe.dishStyle || recipe.style || '').toLowerCase();
-    const cat = (recipe.dishCategory || '').toLowerCase();
-    const name = (recipe.name || '').toLowerCase();
-
-    if (['sauce', 'glaze', 'marinade', 'coating', 'paste', 'dip'].includes(style) ||
-      ['condiment', 'sauce', 'topping'].includes(cat) || name.includes('sauce')) {
-      return 40;
-    }
-
-    if (['side', 'snack', 'vegetable_dish', 'pickle'].includes(cat) ||
-      ['side', 'steamed', 'raw', 'pickle'].includes(style) ||
-      name.includes('kimchi') || name.includes('pickle')) {
-      return sidePortionSize;
-    }
-
-    if (['appetizer', 'starter', 'salad'].includes(cat) ||
-      ['appetizer', 'starter', 'salad'].includes(style) ||
-      name.includes('salad') || name.includes('appetizer')) {
-      return starterPortionSize;
-    }
-
-    if (style === 'prep' || cat === 'base' || cat === 'stock') {
-      return 1000;
-    }
-
-    return mainPortionSize;
-  }, [mainPortionSize, sidePortionSize, starterPortionSize]);
-
-  const getPortionSize = useCallback((recipe) => {
-    if (!recipe) return mainPortionSize;
-    const unit = (recipe.unit || '').toLowerCase();
-    if (unit.includes('portion')) return 1;
-    return getPortionWeight(recipe);
-  }, [getPortionWeight, mainPortionSize]);
 
   // Fetch Recipes from Supabase with Rich Data Merging
   useEffect(() => {
@@ -365,7 +270,7 @@ const SopMain = () => {
       return formatDisplay(currentYieldValue * pWeight, 'g');
     }
     return formatDisplay(currentYieldValue, activeRecipe.unit);
-  }, [activeRecipe, currentYieldValue, getPortionWeight]);
+  }, [activeRecipe, currentYieldValue, getPortionWeight, formatDisplay]);
 
   const isBulkMode = useMemo(() => {
     // Volume focus of 300 or 600+ automatically triggers bulk mode for efficiency
@@ -453,17 +358,6 @@ const SopMain = () => {
   // Handles recursive sub-recipes and unit normalization
   const aggregatedOrder = useMemo(() => {
     const totals = {};
-    const SKU_TO_RECIPE_MAP = {
-      'INT-MAG-SOY': 'magic-soy',
-      'INT-BBQ-SCE': 'bbq-sauce',
-      'INT-SWT-SWP': 'sweet-spicy-sauce',
-      'INT-CHK-COAT': 'chicken-coating-flour',
-      'INT-CHK-STRCH': 'chicken-coating-starch',
-      'INT-EGG-WSH': 'egg-wash',
-      'INT-TTE-SCE': 'tteokkochi-sauce',
-      'INT-CUR-ROUX': 'curry-roux',
-      'INT-CUR-BASE': 'curry-vege-base'
-    };
 
     const processRecipe = (recipeId, yieldRequested, seen = new Set(), depth = 0) => {
       // Loop Protection & Zero Safety
@@ -477,7 +371,7 @@ const SopMain = () => {
 
       recipe.ingredients.forEach(ing => {
         if (!ing) return;
-        const subRecipeId = SKU_TO_RECIPE_MAP[ing.sku] || recipes.find(r => r.id === ing.sku)?.id;
+        const subRecipeId = resolveRecipeIdBySku(ing.sku, recipes);
         let qtyToProcess = parseFloat(ing.qty) || 0;
         if (qtyToProcess <= 0) return;
 

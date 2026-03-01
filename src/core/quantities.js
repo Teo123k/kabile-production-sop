@@ -81,3 +81,15 @@ export function formatDisplay(val, unit, unitSystem = 'metric') {
     const { val: v, unit: u } = formatQuantity(val, unit, unitSystem);
     return { v, u };
 }
+
+/**
+ * Returns only the formatted value string
+ * @param {number} val 
+ * @param {string} unit 
+ * @param {'metric'|'imperial'} unitSystem 
+ * @returns {string}
+ */
+export function formatValue(val, unit, unitSystem = 'metric') {
+    const { val: v } = formatQuantity(val, unit, unitSystem);
+    return v;
+}
