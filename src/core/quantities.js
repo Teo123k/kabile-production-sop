@@ -49,7 +49,7 @@ export function formatQuantity(val, unit = '', unitSystem = 'metric') {
             }
         }
     } else {
-        // Metric auto-scaling
+        // Metric auto-scaling - Re-enabled per user request for consistent g/kg display
         if (uMatch === 'g' && val >= 1000) {
             displayVal = val / 1000;
             displayUnit = 'kg';
@@ -62,8 +62,8 @@ export function formatQuantity(val, unit = '', unitSystem = 'metric') {
     const rounded = chefRound(displayVal, displayUnit);
 
     let valStr = rounded.toString();
-    const duLower = displayUnit.toLowerCase();
-    if (['kg', 'l', 'lb', 'qt'].some(u => duLower.includes(u))) {
+    const duLower = displayUnit.toLowerCase().trim();
+    if (/^(kg|l|liter|litre|lb|qt)s?$/.test(duLower) || duLower === 'kilogram' || duLower === 'kilograms') {
         valStr = rounded.toFixed(1).replace(/\.0$/, "");
     }
 

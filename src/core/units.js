@@ -16,13 +16,13 @@ export function chefRound(val, unit = '') {
     const u = (unit || '').toLowerCase();
 
     // 1. Bulk Units (kg, L, Liter, lb, qt) - 0.5 steps
-    if (['kg', 'l', 'liter', 'lb', 'qt'].some(x => u.includes(x))) {
+    if (/^(kg|l|liter|litre|lb|qt)s?$/.test(u) || u === 'kilogram' || u === 'kilograms') {
         const r = Math.round(val * 10) / 10;
         return r > 0 ? r : Math.ceil(val * 10) / 10;
     }
 
     // 1.5 Medium Imperial Units (oz, fl oz, cup) - 0.25 steps (quarter increments)
-    if (['oz', 'fl oz', 'cup'].some(x => u.includes(x))) {
+    if (/^(oz|fl oz|cup)s?$/.test(u)) {
         const fraction = Math.round(val * 4) / 4;
         return fraction > 0 ? fraction : Math.round(val * 10) / 10;
     }

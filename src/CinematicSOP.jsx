@@ -2,6 +2,145 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from './supabaseClient';
 import { useSettings } from './SettingsContext';
 
+const SLIDE_STYLES = `
+        .slider-window {
+          width: 1280px;
+          height: 720px;
+          position: relative;
+          border: 1px solid var(--border);
+          overflow: hidden;
+          background: var(--bg);
+          box-shadow: 0 0 100px rgba(0,0,0,0.5);
+          font-family: 'Inter', sans-serif;
+          color: var(--text);
+        }
+
+        .slides-container {
+          display: flex;
+          transition: transform 0.6s cubic-bezier(0.23, 1, 0.32, 1);
+          height: 100%;
+          width: 100%;
+        }
+
+        .slide {
+          min-width: 1280px;
+          height: 100%;
+          display: grid;
+          grid-template-rows: 100px 1fr 60px;
+        }
+
+        .nav-btn {
+          position: absolute;
+          top: 50%;
+          transform: translateY(-50%);
+          background: rgba(0,0,0,0.6);
+          border: 1px solid var(--border);
+          color: white;
+          width: 50px;
+          height: 50px;
+          border-radius: 50%;
+          cursor: pointer;
+          z-index: 100;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          transition: 0.2s;
+          backdrop-filter: blur(5px);
+        }
+        .nav-btn:hover { background: var(--highlight); border-color: var(--highlight); }
+        .prev { left: 15px; }
+        .next { right: 15px; }
+
+        .slide-header {
+          padding: 0 50px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          border-bottom: 1px solid var(--border);
+          background: var(--surface);
+        }
+        .header-title-box h2 { font-size: 26px; font-weight: 800; text-transform: uppercase; letter-spacing: -1px; margin: 0; }
+        .header-title-box p { font-family: 'JetBrains Mono'; font-size: 10px; color: var(--highlight); text-transform: uppercase; letter-spacing: 2px; margin: 0 0 4px 0; }
+        .header-viz { width: 140px; height: 70px; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: #000; }
+        .header-viz img { width: 100%; height: 100%; object-fit: cover; opacity: 0.8; filter: contrast(1.1); }
+
+        .dashboard-grid {
+          display: grid;
+          grid-template-columns: 1fr 400px;
+          gap: 20px;
+          padding: 30px 50px 50px 50px;
+          overflow-y: auto;
+          overflow-x: hidden;
+        }
+
+        .dashboard-grid::-webkit-scrollbar { width: 6px; }
+        .dashboard-grid::-webkit-scrollbar-track { background: var(--bg); }
+        .dashboard-grid::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        .dashboard-grid::-webkit-scrollbar-thumb:hover { background: var(--highlight); }
+
+        .timeline-column {
+          display: flex;
+          flex-direction: column;
+          gap: 15px;
+        }
+
+        .op-card {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          padding: 20px;
+          position: relative;
+          border-left: 3px solid var(--border);
+        }
+        .op-card.active-phase { border-left-color: var(--highlight); background: rgba(59, 130, 246, 0.03); }
+        .op-label { font-size: 10px; font-weight: 800; text-transform: uppercase; color: var(--highlight); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+
+        .bullet-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .bullet-item h4 { font-size: 12px; color: var(--text); margin-bottom: 4px; font-weight: 700; }
+        .bullet-item ul { list-style: none; padding-left: 10px; }
+        .bullet-item li { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; line-height: 1.4; position: relative; }
+        .bullet-item li::before { content: "›"; position: absolute; left: -10px; color: var(--highlight); }
+
+        .logic-column { display: flex; flex-direction: column; gap: 15px; }
+        .logic-module { background: var(--surface-low); border: 1px solid var(--border); padding: 20px; border-radius: 4px; }
+        .strategy-header { font-size: 10px; font-weight: 900; color: #f59e0b; text-transform: uppercase; margin-bottom: 15px; letter-spacing: 1px; display: flex; align-items: center; gap: 8px; }
+
+        .stat-line { display: flex; justify-content: space-between; font-size: 11px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+        .stat-line:last-child { border-bottom: none; }
+        .stat-line span:first-child { color: var(--text-dim); flex-shrink: 0; }
+        .stat-line span:last-child { font-weight: 800; color: var(--text); text-align: right; max-width: 58%; word-break: break-word; white-space: normal; line-height: 1.35; }
+
+        .dish-mission { flex: 1; padding: 0 40px; display: flex; flex-direction: column; justify-content: center; border-left: 1px solid var(--border); height: 100%; }
+        .mission-label { font-size: 9px; font-weight: 900; color: var(--highlight); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 10px; opacity: 0.8; }
+        .mission-list { margin: 0; padding: 0; list-style: none; }
+        .mission-list li { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 6px; position: relative; padding-left: 15px; line-height: 1.2; }
+        .mission-list li::before { content: "•"; position: absolute; left: 0; color: var(--highlight); font-weight: 900; }
+
+        .logic-module.intel { background: var(--surface-high); border: 1px solid var(--highlight); box-shadow: 0 0 20px rgba(59, 130, 246, 0.05); }
+        .intel-spec-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 5px; }
+        .intel-spec-item { display: flex; flex-direction: column; gap: 2px; }
+        .intel-label { font-size: 8px; font-weight: 900; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+        .intel-value { font-size: 11px; font-weight: 800; color: var(--text); text-transform: uppercase; }
+        .intel-caution { grid-column: span 2; background: rgba(245, 158, 11, 0.05); border: 1px solid rgba(245, 158, 11, 0.2); margin-top: 5px; padding: 8px; }
+        .intel-caution .intel-value { color: #f59e0b; font-family: 'JetBrains Mono'; font-size: 10px; }
+
+        .slide-footer {
+          padding: 0 50px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          border-top: 1px solid var(--border);
+          background: var(--surface);
+        }
+        .maintenance-tag { font-family: 'JetBrains Mono'; font-size: 10px; color: var(--muted); font-weight: 600; }
+        .pill { padding: 4px 12px; border-radius: 4px; font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: 1px; margin-left: 10px; }
+        .pill.j { background: #10b981; color: #064e3b; }
+        .pill.s { background: #8b5cf6; color: #fff; }
+
+        .dots { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; }
+        .dot { width: 8px; height: 8px; background: var(--border); border-radius: 50%; cursor: pointer; transition: 0.3s; }
+        .dot.active { background: var(--highlight); width: 24px; border-radius: 4px; }
+`;
+
 /**
  * CinematicSOP Component
  * Self-fetching Brigade SOP briefing slider.
@@ -140,144 +279,7 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
     // ── Render ─────────────────────────────────────────────────────────────────
     return (
         <div className="cinematic-presentation-container flex flex-col items-center py-10 min-h-[800px]">
-            <style>{`
-        .slider-window {
-          width: 1280px;
-          height: 720px;
-          position: relative;
-          border: 1px solid var(--border);
-          overflow: hidden;
-          background: var(--bg);
-          box-shadow: 0 0 100px rgba(0,0,0,0.5);
-          font-family: 'Inter', sans-serif;
-          color: var(--text);
-        }
-
-        .slides-container {
-          display: flex;
-          transition: transform 0.6s cubic-bezier(0.23, 1, 0.32, 1);
-          height: 100%;
-          width: 100%;
-        }
-
-        .slide {
-          min-width: 1280px;
-          height: 100%;
-          display: grid;
-          grid-template-rows: 100px 1fr 60px;
-        }
-
-        .nav-btn {
-          position: absolute;
-          top: 50%;
-          transform: translateY(-50%);
-          background: rgba(0,0,0,0.6);
-          border: 1px solid var(--border);
-          color: white;
-          width: 50px;
-          height: 50px;
-          border-radius: 50%;
-          cursor: pointer;
-          z-index: 100;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          transition: 0.2s;
-          backdrop-filter: blur(5px);
-        }
-        .nav-btn:hover { background: var(--highlight); border-color: var(--highlight); }
-        .prev { left: 15px; }
-        .next { right: 15px; }
-
-        .slide-header {
-          padding: 0 50px;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          border-bottom: 1px solid var(--border);
-          background: var(--surface);
-        }
-        .header-title-box h2 { font-size: 26px; font-weight: 800; text-transform: uppercase; letter-spacing: -1px; margin: 0; }
-        .header-title-box p { font-family: 'JetBrains Mono'; font-size: 10px; color: var(--highlight); text-transform: uppercase; letter-spacing: 2px; margin: 0 0 4px 0; }
-        .header-viz { width: 140px; height: 70px; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: #000; }
-        .header-viz img { width: 100%; height: 100%; object-fit: cover; opacity: 0.8; filter: contrast(1.1); }
-
-        .dashboard-grid {
-          display: grid;
-          grid-template-columns: 1fr 400px;
-          gap: 20px;
-          padding: 30px 50px 50px 50px;
-          overflow-y: auto;
-          overflow-x: hidden;
-        }
-
-        .dashboard-grid::-webkit-scrollbar { width: 6px; }
-        .dashboard-grid::-webkit-scrollbar-track { background: var(--bg); }
-        .dashboard-grid::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-        .dashboard-grid::-webkit-scrollbar-thumb:hover { background: var(--highlight); }
-
-        .timeline-column {
-          display: flex;
-          flex-direction: column;
-          gap: 15px;
-        }
-
-        .op-card {
-          background: var(--surface);
-          border: 1px solid var(--border);
-          padding: 20px;
-          position: relative;
-          border-left: 3px solid var(--border);
-        }
-        .op-card.active-phase { border-left-color: var(--highlight); background: rgba(59, 130, 246, 0.03); }
-        .op-label { font-size: 10px; font-weight: 800; text-transform: uppercase; color: var(--highlight); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
-
-        .bullet-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        .bullet-item h4 { font-size: 12px; color: var(--text); margin-bottom: 4px; font-weight: 700; }
-        .bullet-item ul { list-style: none; padding-left: 10px; }
-        .bullet-item li { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; line-height: 1.4; position: relative; }
-        .bullet-item li::before { content: "›"; position: absolute; left: -10px; color: var(--highlight); }
-
-        .logic-column { display: flex; flex-direction: column; gap: 15px; }
-        .logic-module { background: var(--surface-low); border: 1px solid var(--border); padding: 20px; border-radius: 4px; }
-        .strategy-header { font-size: 10px; font-weight: 900; color: #f59e0b; text-transform: uppercase; margin-bottom: 15px; letter-spacing: 1px; display: flex; align-items: center; gap: 8px; }
-
-        .stat-line { display: flex; justify-content: space-between; font-size: 11px; padding: 8px 0; border-bottom: 1px solid var(--border); }
-        .stat-line:last-child { border-bottom: none; }
-        .stat-line span:first-child { color: var(--text-dim); flex-shrink: 0; }
-        .stat-line span:last-child { font-weight: 800; color: var(--text); text-align: right; max-width: 58%; word-break: break-word; white-space: normal; line-height: 1.35; }
-
-        .dish-mission { flex: 1; padding: 0 40px; display: flex; flex-direction: column; justify-content: center; border-left: 1px solid var(--border); height: 100%; }
-        .mission-label { font-size: 9px; font-weight: 900; color: var(--highlight); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 10px; opacity: 0.8; }
-        .mission-list { margin: 0; padding: 0; list-style: none; }
-        .mission-list li { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 6px; position: relative; padding-left: 15px; line-height: 1.2; }
-        .mission-list li::before { content: "•"; position: absolute; left: 0; color: var(--highlight); font-weight: 900; }
-
-        .logic-module.intel { background: var(--surface-high); border: 1px solid var(--highlight); box-shadow: 0 0 20px rgba(59, 130, 246, 0.05); }
-        .intel-spec-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 5px; }
-        .intel-spec-item { display: flex; flex-direction: column; gap: 2px; }
-        .intel-label { font-size: 8px; font-weight: 900; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
-        .intel-value { font-size: 11px; font-weight: 800; color: var(--text); text-transform: uppercase; }
-        .intel-caution { grid-column: span 2; background: rgba(245, 158, 11, 0.05); border: 1px solid rgba(245, 158, 11, 0.2); margin-top: 5px; padding: 8px; }
-        .intel-caution .intel-value { color: #f59e0b; font-family: 'JetBrains Mono'; font-size: 10px; }
-
-        .slide-footer {
-          padding: 0 50px;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          border-top: 1px solid var(--border);
-          background: var(--surface);
-        }
-        .maintenance-tag { font-family: 'JetBrains Mono'; font-size: 10px; color: var(--muted); font-weight: 600; }
-        .pill { padding: 4px 12px; border-radius: 4px; font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: 1px; margin-left: 10px; }
-        .pill.j { background: #10b981; color: #064e3b; }
-        .pill.s { background: #8b5cf6; color: #fff; }
-
-        .dots { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; }
-        .dot { width: 8px; height: 8px; background: var(--border); border-radius: 50%; cursor: pointer; transition: 0.3s; }
-        .dot.active { background: var(--highlight); width: 24px; border-radius: 4px; }
-      `}</style>
+            <style>{SLIDE_STYLES}</style>
 
             <div className="slider-window">
                 {/* Navigation Buttons */}
@@ -403,12 +405,12 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
                                                     <span className="intel-label">Audit Frequency</span>
                                                     <span className="intel-value">EVERY SESSION</span>
                                                 </div>
-                                                {sd.maintenance && (
+                                                {sd.maintenance ? (
                                                     <div className="intel-spec-item intel-caution">
                                                         <span className="intel-label">CRITICAL MANAGER CAUTION</span>
                                                         <span className="intel-value">{sd.maintenance}</span>
                                                     </div>
-                                                )}
+                                                ) : null}
                                             </div>
                                         </div>
 

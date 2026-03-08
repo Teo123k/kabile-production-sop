@@ -1,121 +1,108 @@
-export const calculateBOM = (recipes, volumeFocus, menuMix, getPortionSize) => {
+import { resolveRecipeId } from '../core/sku';
+
+/**
+ * BOM Engine - Pure Mathematical Logic
+ * Calculates scale factors and demand across a recipe cascade.
+ * 
+ * @param {Array} recipes - All recipe objects
+ * @param {Object} scales - Initial scale factors { [id]: scale }
+ * @returns {Object} { nodes, demand, activeOrigins }
+ */
+export const calculateBOM = (recipes, scales = {}, portionsPerBatch = 6) => {
     try {
-        if (!recipes || !Array.isArray(recipes)) return {};
-        const safeMenuMix = menuMix || {};
-        const safeVolumeFocus = parseFloat(volumeFocus) || 0;
+        if (!recipes || !Array.isArray(recipes)) return { nodes: {}, demand: {}, activeOrigins: {} };
 
-        // 1. FAST INDEXING: Map-based lookups for O(1) performance
         const recipeMap = new Map();
-        const skuMap = new Map();
+        recipes.forEach(r => recipeMap.set(r.id, r));
 
-        recipes.forEach(r => {
-            if (!r || !r.id) return;
-            recipeMap.set(r.id, r);
-            if (r.sku) skuMap.set(r.sku, r);
-            if (r.recipe_id) skuMap.set(r.recipe_id, r);
-            if (r.meta && r.meta.sku) skuMap.set(r.meta.sku, r);
-        });
+        const nodes = {}; // { [id]: { scale, derivedScale, manualScale, weight, portions, unit } }
+        const safeScales = scales || {};
 
-        // 2. Initialize Demand Map
-        const demandObj = {};
-        recipes.forEach(r => {
-            if (r && r.id) demandObj[r.id] = 0;
-        });
-
-        const hasMix = Object.keys(safeMenuMix).length > 0;
-
-        if (!hasMix || safeVolumeFocus === 0) {
-            recipes.forEach(r => {
-                if (!r || !r.id) return;
-                const pSize = getPortionSize ? getPortionSize(r) : 250;
-                demandObj[r.id] = safeVolumeFocus * pSize;
-            });
-            return demandObj;
-        }
-
-        // 3. Apply Top-Level Demand
-        recipes.forEach(r => {
-            if (!r || !r.id) return;
-            const mixVal = safeMenuMix[r.id];
-            if (mixVal !== undefined && mixVal !== null) {
-                const mixPercentage = (parseFloat(mixVal) || 0) / 100;
-                const portionsNeeded = safeVolumeFocus * mixPercentage;
-                const pSize = getPortionSize ? getPortionSize(r) : 250;
-                demandObj[r.id] = portionsNeeded * pSize;
-            }
-        });
-
-        // 4. Recursive Explosion (Cascade Down)
-        const explode = (recipeId, yieldRequested, seen = new Set(), depth = 0) => {
-            if (depth > 10 || seen.has(recipeId) || !yieldRequested || yieldRequested <= 0) return;
+        const explode = (recipeId, incomingScale, seen = new Set(), depth = 0) => {
+            if (depth > 12 || seen.has(recipeId) || incomingScale < 0) return;
             seen.add(recipeId);
 
             const recipe = recipeMap.get(recipeId);
-            if (!recipe || !recipe.ingredients || !Array.isArray(recipe.ingredients)) return;
-
-            recipe.ingredients.forEach(ing => {
-                if (!ing || !ing.sku) return;
-
-                // O(1) LOOKUP using pre-built maps
-                const childRecipe = recipeMap.get(ing.sku) || skuMap.get(ing.sku);
-                const childRecipeId = childRecipe?.id;
-
-                if (childRecipeId) {
-                    let qtyToProcess = parseFloat(ing.qty) || 0;
-                    if (qtyToProcess <= 0) return;
-
-                    const subUnit = (childRecipe.unit || '').toLowerCase();
-                    const reqUnit = (ing.unit || '').toLowerCase();
-                    const isSubMetric = subUnit === 'kg' || subUnit === 'l' || subUnit === 'liter' || subUnit === 'litre';
-                    const isReqSmall = reqUnit === 'g' || reqUnit === 'ml';
-
-                    if (isSubMetric && isReqSmall) {
-                        qtyToProcess /= 1000;
-                    }
-
-                    const safeBaseYield = parseFloat(recipe.baseYield) || 1;
-                    const scaledChildYield = (qtyToProcess / safeBaseYield) * yieldRequested;
-
-                    if (demandObj[childRecipeId] === undefined) demandObj[childRecipeId] = 0;
-                    demandObj[childRecipeId] += scaledChildYield;
-
-                    explode(childRecipeId, scaledChildYield, new Set(seen), depth + 1);
-                }
-            });
-        };
-
-        const initialDemand = { ...demandObj };
-        Object.entries(initialDemand).forEach(([recipeId, yieldRequested]) => {
-            if (yieldRequested > 0) {
-                explode(recipeId, yieldRequested);
-            }
-        });
-
-        // 5. Apply Production Strategies & Rounding
-        Object.keys(demandObj).forEach(recipeId => {
-            const recipe = recipeMap.get(recipeId);
             if (!recipe) return;
 
-            let totalDemand = demandObj[recipeId];
-            if (!totalDemand || totalDemand <= 0) {
-                demandObj[recipeId] = 0;
-                return;
+            // Initialize node if missing
+            if (!nodes[recipeId]) {
+                const manualScale = parseFloat(safeScales[recipeId]) || 0;
+                nodes[recipeId] = {
+                    scale: 0,
+                    derivedScale: 0,
+                    manualScale,
+                    weight: 0,
+                    portions: 0,
+                    unit: recipe.unit
+                };
             }
 
-            const strategy = recipe.production_strategy || 'dynamic_daily';
-            const batchSize = parseFloat(recipe.production_batch_size) || parseFloat(recipe.baseYield) || 1;
+            // Delta-Max Logic: Use Max(Manual, Derived) and only propagate INCREASES
+            const oldTotal = Math.max(nodes[recipeId].manualScale, nodes[recipeId].derivedScale);
+            nodes[recipeId].derivedScale += incomingScale;
+            const newTotal = Math.max(nodes[recipeId].manualScale, nodes[recipeId].derivedScale);
 
-            if (strategy === 'fixed_batch' || strategy === 'foundational') {
-                const batchesNeeded = Math.ceil(totalDemand / batchSize);
-                demandObj[recipeId] = Number((batchesNeeded * batchSize).toFixed(2));
-            } else {
-                demandObj[recipeId] = Number(totalDemand.toFixed(2));
+            const delta = newTotal - oldTotal;
+            nodes[recipeId].scale = newTotal;
+
+            // Recalculate derived metrics
+            const bYield = parseFloat(recipe.baseYield) || 1;
+            const pPerBatch = parseFloat(recipe.portions_per_batch) || portionsPerBatch;
+            nodes[recipeId].weight = nodes[recipeId].scale * bYield;
+            nodes[recipeId].portions = nodes[recipeId].scale * pPerBatch;
+
+            if (delta <= 0) return; // No new scale to propagate
+
+            // Explode children
+            if (recipe.ingredients) {
+                recipe.ingredients.forEach(ing => {
+                    const childId = resolveRecipeId(ing, recipes);
+                    if (childId) {
+                        const childRecipe = recipeMap.get(childId);
+                        if (!childRecipe) return;
+
+                        let ingQty = parseFloat(ing.qty) || 0;
+                        const subUnit = (childRecipe.unit || '').toLowerCase();
+                        const reqUnit = (ing.unit || '').toLowerCase();
+
+                        // Unit normalization (G/ML to KG/L)
+                        if (/^(kg|l|liter|litre)s?$/.test(subUnit) && /^(g|ml)s?$/.test(reqUnit)) {
+                            ingQty /= 1000;
+                        }
+
+                        const childBaseYield = parseFloat(childRecipe.baseYield) || 1;
+                        const childScaleDelta = (ingQty / childBaseYield) * delta;
+                        explode(childId, childScaleDelta, new Set(seen), depth + 1);
+                    }
+                });
             }
+        };
+
+        // 1. Establish baselines from ALL provided scales
+        Object.keys(safeScales).forEach(id => {
+            explode(id, 0);
         });
 
-        return demandObj;
-    } catch (error) {
-        console.error("BOM Engine Error:", error);
-        return {};
+        // 2. Final cleanup and normalization
+        Object.keys(nodes).forEach(id => {
+            const node = nodes[id];
+            node.scale = Number(node.scale.toFixed(4));
+            node.weight = Number(node.weight.toFixed(2));
+            node.portions = Number(node.portions.toFixed(2));
+        });
+
+        return {
+            nodes,
+            demand: Object.fromEntries(Object.entries(nodes).map(([id, n]) => [id, n.weight])),
+            activeOrigins: Object.fromEntries(
+                Object.entries(safeScales)
+                    .filter(([_, v]) => parseFloat(v) > 0)
+                    .map(([id, v]) => [id, parseFloat(v)])
+            )
+        };
+    } catch (e) {
+        console.error("BOM Fail:", e);
+        return { nodes: {}, demand: {}, activeOrigins: {} };
     }
 };

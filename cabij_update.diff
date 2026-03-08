@@ -1,0 +1,354 @@
+diff --git a/src/App.jsx b/src/App.jsx
+index 87025a3..e31d01d 100644
+--- a/src/App.jsx
++++ b/src/App.jsx
+@@ -114,17 +114,16 @@ const SopMain = () => {
+     , [unitSystem]);
+ 
+   const getPortionWeight = useCallback((recipe) =>
+-    coreGetPortionWeight(recipe, coreSettings)
+-    , [coreSettings]);
++    coreGetPortionWeight(recipe, coreSettings, recipes)
++    , [coreSettings, recipes]);
+ 
+   const getPortionSize = useCallback((recipe) =>
+-    coreGetPortionSize(recipe, coreSettings)
+-    , [coreSettings]);
++    coreGetPortionSize(recipe, coreSettings, recipes)
++    , [coreSettings, recipes]);
+ 
+ 
+   // SHARED STATE: Initialized with Base Yields
+-  const [dailyProduction, setDailyProduction] = useState({});
+-
++  const [manualProduction, setManualProduction] = useState({});
+ 
+   // Fetch Recipes from Supabase with Rich Data Merging
+   useEffect(() => {
+@@ -210,7 +209,7 @@ const SopMain = () => {
+         setSelectedId(recipes[0].id);
+       }
+       const initialDemand = calculateBOM(recipes, volumeFocus, menuMix, getPortionSize);
+-      setDailyProduction(initialDemand);
++      setManualProduction(initialDemand);
+     }
+   }, [recipes]);
+ 
+@@ -224,23 +223,20 @@ const SopMain = () => {
+   useEffect(() => {
+     if (recipes.length === 0) return;
+     const updatedDemand = calculateBOM(recipes, volumeFocus, menuMix, getPortionSize);
+-    setDailyProduction(updatedDemand);
++    setManualProduction(updatedDemand);
+   }, [volumeFocus, menuMix, mainPortionSize, sidePortionSize, starterPortionSize]);
+ 
+-  // CALCULATE BOM EXPLOSION
++  // CALCULATE BOM EXPLOSION: This is the reactive core. 
++  // Any manual change to a parent dish cascades to all children.
+   const explodedTargets = useMemo(() => {
+-    // dailyProduction holds the current state overrides.
+-    // To ensure recursive rules ALWAYS apply if a user manually changes "magic soy" top level demand,
+-    // we pass the entire updated dailyProduction through a secondary BOM cascade if needed.
+-    // But for now, dailyProduction ALREADY contains the exploded values initialized by Settings.
+-    return dailyProduction;
+-  }, [dailyProduction]);
++    return calculateBOM(recipes, volumeFocus, menuMix, getPortionSize, manualProduction);
++  }, [manualProduction, recipes, volumeFocus, menuMix, getPortionSize]);
+ 
+   const activeRecipe = useMemo(() =>
+     recipes.find(r => r.id === selectedId) || recipes[0],
+     [selectedId, recipes]);
+ 
+-  const currentYieldValue = activeRecipe ? dailyProduction[selectedId] : 0;
++  const currentYieldValue = activeRecipe ? explodedTargets[selectedId] : 0;
+ 
+   const currentPortionCount = useMemo(() => {
+     if (!activeRecipe) return 0;
+@@ -415,7 +411,7 @@ const SopMain = () => {
+       });
+     };
+ 
+-    Object.entries(dailyProduction).forEach(([recipeId, yieldRequested]) => {
++    Object.entries(manualProduction).forEach(([recipeId, yieldRequested]) => {
+       if (yieldRequested > 0) processRecipe(recipeId, yieldRequested);
+     });
+ 
+@@ -426,7 +422,7 @@ const SopMain = () => {
+       grouped[cat].push(item);
+     });
+     return grouped;
+-  }, [dailyProduction, recipes]);
++  }, [manualProduction, recipes]);
+ 
+ 
+   const handleCsvDownload = () => {
+@@ -667,7 +663,7 @@ const SopMain = () => {
+             <CommandBoard
+               clientId={clientSlug || 'kabile'}
+               onExit={() => setView('scaler')}
+-              productionTargets={dailyProduction}
++              productionTargets={explodedTargets}
+             />
+           </div>
+         )}
+@@ -777,9 +773,11 @@ const SopMain = () => {
+                     <Scale size={12} className="text-app-accent opacity-50" />
+                     <div className="text-[14px] font-black text-app-text uppercase">
+                       Yield Target: {formatDisplay(currentYieldValue, activeRecipe.unit).v} <span className="text-app-accent">{formatDisplay(currentYieldValue, activeRecipe.unit).u}</span>
+-                      {(activeRecipe.unit || '').toLowerCase().includes('portion') && (
+-                        <span className="block text-[10px] text-app-accent mt-0.5">Total weight: {totalWeightForActive.v}{totalWeightForActive.u}</span>
+-                      )}
++                      <span className="block text-[10px] text-app-accent mt-0.5">
++                        {(activeRecipe.unit || '').toLowerCase().includes('portion')
++                          ? `Total weight: ${totalWeightForActive.v}${totalWeightForActive.u}`
++                          : `Total: ${currentPortionCount} portions`}
++                      </span>
+                     </div>
+                   </div>
+                   <div className="text-[9px] font-bold text-app-muted uppercase tracking-tight leading-tight">
+@@ -810,18 +808,19 @@ const SopMain = () => {
+                         recipes.forEach(r => {
+                           const style = (r.dishStyle || r.style || '').toLowerCase();
+                           const cat = (r.dishCategory || '').toLowerCase();
+-                          const isPrep = ['prep', 'base', 'stock'].includes(style) || ['base', 'stock'].includes(cat);
+-                          if (isPrep) {
+-                            batch[r.id] = parseFloat(r.production_batch_size) || parseFloat(r.baseYield) || 1;
+-                          } else {
+-                            // If unit is Portion, getPortionSize returns 1, so target is portionsPerBatch count
+-                            // If unit is kg/g, getPortionSize returns grams, so target is total weight
++                          const isMainOrSide = !['prep', 'base', 'stock'].includes(style) && !['base', 'stock'].includes(cat);
++
++                          if (isMainOrSide) {
++                            // Set top-level dishes to 50 portions
+                             batch[r.id] = portionsPerBatch * getPortionSize(r);
++                          } else {
++                            // Prep items start at 0 and are filled by the BOM explosion
++                            batch[r.id] = 0;
+                           }
+                         });
+-                        setDailyProduction(batch);
++                        setManualProduction(batch);
+                       }}
+-                      className="bg-app-bg border border-app-border hover:border-app-accent/50 hover:text-app-accent text-[8px] font-black uppercase px-2 py-1 rounded transition-colors text-app-muted"
++                      className="bg-amber-500/10 border border-amber-500/50 hover:bg-amber-500 hover:text-white text-[8px] font-black uppercase px-2 py-1 rounded transition-all text-amber-500 shadow-lg shadow-amber-500/5"
+                     >
+                       Batch All
+                     </button>
+diff --git a/src/core/batch.js b/src/core/batch.js
+index 81973d2..1249509 100644
+--- a/src/core/batch.js
++++ b/src/core/batch.js
+@@ -22,9 +22,10 @@ export function getMultiplier(targetValue, baseYield) {
+  * 
+  * @param {Object} recipe 
+  * @param {BatchSettings} settings 
++ * @param {Array<Object>} allRecipes
+  * @returns {number} The weight in grams/ml
+  */
+-export function getPortionWeight(recipe, settings) {
++export function getPortionWeight(recipe, settings, allRecipes = []) {
+     const { mainPortionSize, sidePortionSize, starterPortionSize } = settings;
+     if (!recipe) return mainPortionSize;
+ 
+@@ -34,12 +35,27 @@ export function getPortionWeight(recipe, settings) {
+     const style = (recipe.dishStyle || recipe.style || '').toLowerCase();
+     const cat = (recipe.dishCategory || '').toLowerCase();
+     const name = (recipe.name || '').toLowerCase();
++    const sku = recipe.sku || recipe.recipe_id || recipe.id;
+ 
+-    if (['sauce', 'glaze', 'marinade', 'coating', 'paste', 'dip'].includes(style) ||
+-        ['condiment', 'sauce', 'topping'].includes(cat) || name.includes('sauce')) {
+-        return 40;
++    // 2. Usage Checking: If this is a prep/sauce, look for it in other recipes
++    const isComponent = ['sauce', 'glaze', 'marinade', 'coating', 'paste', 'dip', 'prep', 'base', 'stock'].includes(style) ||
++        ['condiment', 'sauce', 'topping', 'base', 'stock'].includes(cat) ||
++        name.includes('sauce') || name.includes('marinade');
++
++    if (isComponent && allRecipes.length > 0) {
++        // Find the FIRST recipe that uses this item as an ingredient
++        for (const r of allRecipes) {
++            if (!r.ingredients) continue;
++            const usage = r.ingredients.find(ing => ing.sku === sku);
++            if (usage && usage.qty > 0) {
++                const parentBase = parseFloat(r.baseYield) || 1;
++                // Use the usage per portion of the parent
++                return (parseFloat(usage.qty) / parentBase) * getPortionWeight(r, settings, []);
++            }
++        }
+     }
+ 
++    // 3. Heuristic Defaults
+     if (['side', 'snack', 'vegetable_dish', 'pickle'].includes(cat) ||
+         ['side', 'steamed', 'raw', 'pickle'].includes(style) ||
+         name.includes('kimchi') || name.includes('pickle')) {
+@@ -53,7 +69,7 @@ export function getPortionWeight(recipe, settings) {
+     }
+ 
+     if (style === 'prep' || cat === 'base' || cat === 'stock') {
+-        return 1000;
++        return 1000; // Default to 1kg if no usage found
+     }
+ 
+     return mainPortionSize;
+@@ -66,9 +82,18 @@ export function getPortionWeight(recipe, settings) {
+  * @param {BatchSettings} settings 
+  * @returns {number}
+  */
+-export function getPortionSize(recipe, settings) {
++export function getPortionSize(recipe, settings, allRecipes = []) {
+     if (!recipe) return settings.mainPortionSize;
+     const unit = (recipe.unit || '').toLowerCase();
++    const weight = getPortionWeight(recipe, settings, allRecipes);
++
+     if (unit.includes('portion')) return 1;
+-    return getPortionWeight(recipe, settings);
++
++    // Normalize: if the recipe's unit is kg/L, the portion size must be in kg/L
++    const isBulkMetric = /^(kg|l|liter|litre)s?$/.test(unit) || unit === 'kilogram' || unit === 'kilograms';
++    if (isBulkMetric) {
++        return weight / 1000;
++    }
++
++    return weight;
+ }
+diff --git a/src/core/quantities.js b/src/core/quantities.js
+index 2143885..8303e8f 100644
+--- a/src/core/quantities.js
++++ b/src/core/quantities.js
+@@ -62,8 +62,8 @@ export function formatQuantity(val, unit = '', unitSystem = 'metric') {
+     const rounded = chefRound(displayVal, displayUnit);
+ 
+     let valStr = rounded.toString();
+-    const duLower = displayUnit.toLowerCase();
+-    if (['kg', 'l', 'lb', 'qt'].some(u => duLower.includes(u))) {
++    const duLower = displayUnit.toLowerCase().trim();
++    if (/^(kg|l|liter|litre|lb|qt)s?$/.test(duLower) || duLower === 'kilogram' || duLower === 'kilograms') {
+         valStr = rounded.toFixed(1).replace(/\.0$/, "");
+     }
+ 
+diff --git a/src/core/units.js b/src/core/units.js
+index 61d5576..71d7b30 100644
+--- a/src/core/units.js
++++ b/src/core/units.js
+@@ -16,13 +16,13 @@ export function chefRound(val, unit = '') {
+     const u = (unit || '').toLowerCase();
+ 
+     // 1. Bulk Units (kg, L, Liter, lb, qt) - 0.5 steps
+-    if (['kg', 'l', 'liter', 'lb', 'qt'].some(x => u.includes(x))) {
++    if (/^(kg|l|liter|litre|lb|qt)s?$/.test(u) || u === 'kilogram' || u === 'kilograms') {
+         const r = Math.round(val * 10) / 10;
+         return r > 0 ? r : Math.ceil(val * 10) / 10;
+     }
+ 
+     // 1.5 Medium Imperial Units (oz, fl oz, cup) - 0.25 steps (quarter increments)
+-    if (['oz', 'fl oz', 'cup'].some(x => u.includes(x))) {
++    if (/^(oz|fl oz|cup)s?$/.test(u)) {
+         const fraction = Math.round(val * 4) / 4;
+         return fraction > 0 ? fraction : Math.round(val * 10) / 10;
+     }
+diff --git a/src/utils/BOMEngine.js b/src/utils/BOMEngine.js
+index c363711..03366a5 100644
+--- a/src/utils/BOMEngine.js
++++ b/src/utils/BOMEngine.js
+@@ -1,10 +1,10 @@
+-export const calculateBOM = (recipes, volumeFocus, menuMix, getPortionSize) => {
++export const calculateBOM = (recipes, volumeFocus, menuMix, getPortionSize, seeds = null) => {
+     try {
+         if (!recipes || !Array.isArray(recipes)) return {};
+         const safeMenuMix = menuMix || {};
+         const safeVolumeFocus = parseFloat(volumeFocus) || 0;
+ 
+-        // 1. FAST INDEXING: Map-based lookups for O(1) performance
++        // 1. FAST INDEXING
+         const recipeMap = new Map();
+         const skuMap = new Map();
+ 
+@@ -13,37 +13,37 @@ export const calculateBOM = (recipes, volumeFocus, menuMix, getPortionSize) => {
+             recipeMap.set(r.id, r);
+             if (r.sku) skuMap.set(r.sku, r);
+             if (r.recipe_id) skuMap.set(r.recipe_id, r);
+-            if (r.meta && r.meta.sku) skuMap.set(r.meta.sku, r);
+         });
+ 
+         // 2. Initialize Demand Map
+         const demandObj = {};
+         recipes.forEach(r => {
+-            if (r && r.id) demandObj[r.id] = 0;
++            if (r && r.id) demandObj[r.id] = (seeds && seeds[r.id]) ? seeds[r.id] : 0;
+         });
+ 
+         const hasMix = Object.keys(safeMenuMix).length > 0;
+ 
+-        if (!hasMix || safeVolumeFocus === 0) {
+-            recipes.forEach(r => {
+-                if (!r || !r.id) return;
+-                const pSize = getPortionSize ? getPortionSize(r) : 250;
+-                demandObj[r.id] = safeVolumeFocus * pSize;
+-            });
+-            return demandObj;
+-        }
+-
+-        // 3. Apply Top-Level Demand
+-        recipes.forEach(r => {
+-            if (!r || !r.id) return;
+-            const mixVal = safeMenuMix[r.id];
+-            if (mixVal !== undefined && mixVal !== null) {
+-                const mixPercentage = (parseFloat(mixVal) || 0) / 100;
+-                const portionsNeeded = safeVolumeFocus * mixPercentage;
+-                const pSize = getPortionSize ? getPortionSize(r) : 250;
+-                demandObj[r.id] = portionsNeeded * pSize;
++        // 3. Apply Top-Level Demand (if no seeds provided)
++        if (!seeds) {
++            if (!hasMix || safeVolumeFocus === 0) {
++                recipes.forEach(r => {
++                    if (!r || !r.id) return;
++                    const pSize = getPortionSize ? getPortionSize(r) : 250;
++                    demandObj[r.id] = safeVolumeFocus * pSize;
++                });
++            } else {
++                recipes.forEach(r => {
++                    if (!r || !r.id) return;
++                    const mixVal = safeMenuMix[r.id];
++                    if (mixVal !== undefined && mixVal !== null) {
++                        const mixPercentage = (parseFloat(mixVal) || 0) / 100;
++                        const portionsNeeded = safeVolumeFocus * mixPercentage;
++                        const pSize = getPortionSize ? getPortionSize(r) : 250;
++                        demandObj[r.id] = portionsNeeded * pSize;
++                    }
++                });
+             }
+-        });
++        }
+ 
+         // 4. Recursive Explosion (Cascade Down)
+         const explode = (recipeId, yieldRequested, seen = new Set(), depth = 0) => {
+@@ -56,7 +56,6 @@ export const calculateBOM = (recipes, volumeFocus, menuMix, getPortionSize) => {
+             recipe.ingredients.forEach(ing => {
+                 if (!ing || !ing.sku) return;
+ 
+-                // O(1) LOOKUP using pre-built maps
+                 const childRecipe = recipeMap.get(ing.sku) || skuMap.get(ing.sku);
+                 const childRecipeId = childRecipe?.id;
+ 
+@@ -66,8 +65,8 @@ export const calculateBOM = (recipes, volumeFocus, menuMix, getPortionSize) => {
+ 
+                     const subUnit = (childRecipe.unit || '').toLowerCase();
+                     const reqUnit = (ing.unit || '').toLowerCase();
+-                    const isSubMetric = subUnit === 'kg' || subUnit === 'l' || subUnit === 'liter' || subUnit === 'litre';
+-                    const isReqSmall = reqUnit === 'g' || reqUnit === 'ml';
++                    const isSubMetric = /^(kg|l|liter|litre)s?$/.test(subUnit);
++                    const isReqSmall = /^(g|ml)s?$/.test(reqUnit);
+ 
+                     if (isSubMetric && isReqSmall) {
+                         qtyToProcess /= 1000;
+@@ -84,8 +83,8 @@ export const calculateBOM = (recipes, volumeFocus, menuMix, getPortionSize) => {
+             });
+         };
+ 
+-        const initialDemand = { ...demandObj };
+-        Object.entries(initialDemand).forEach(([recipeId, yieldRequested]) => {
++        const currentSeeds = { ...demandObj };
++        Object.entries(currentSeeds).forEach(([recipeId, yieldRequested]) => {
+             if (yieldRequested > 0) {
+                 explode(recipeId, yieldRequested);
+             }
