@@ -34,7 +34,9 @@ import {
   Undo2,
   Pencil,
   RotateCcw,
-  Timer
+  Timer,
+  Link2,
+  AlertTriangle
 } from 'lucide-react';
 import { Routes, Route, useParams, Navigate } from 'react-router-dom';
 import { useSettings } from './SettingsContext';
@@ -48,8 +50,16 @@ import {
   getPortionWeight as coreGetPortionWeight,
   getPortionSize as coreGetPortionSize,
   getStandardBatchYield as coreGetStandardBatchYield,
+  getRecipePortionWeight as coreGetRecipePortionWeight,
+  getCanonicalBatchYield as coreGetCanonicalBatchYield,
+  getCanonicalServingSize as coreGetCanonicalServingSize,
+  getCanonicalPortionCount as coreGetCanonicalPortionCount,
+  isSauceLikeRecipe,
   resolveRecipeId,
-  resolveRecipeIdBySku
+  resolveRecipeIdBySku,
+  toGrams,
+  getRecipeBaselineGrams,
+  sumIngredientsGrams
 } from './core';
 
 const CLIENT_CONFIGS = {
@@ -67,11 +77,41 @@ const CLIENT_CONFIGS = {
   }
 };
 
+const EDIT_CATEGORY_ORDER = ['BASE', 'DAIRY', 'DRY', 'FAT', 'PROTEIN', 'SPICE', 'STOCK', 'WET / LIQUID', 'OTHER'];
+const LIQUID_LIKE_CATEGORIES = new Set(['WET / LIQUID', 'STOCK']);
+const DISH_STYLE_TO_PORTION_CLASS = {
+  stew: 'stew',
+  curry: 'curry',
+  carb: 'carb',
+  main_carb: 'main_carb',
+  side: 'side',
+  salad: 'salad',
+  prep: 'prep',
+  sauce: 'sauce',
+  component: 'component'
+};
+
 
 const SopMain = () => {
+  useEffect(() => { console.log("CORE_LOGIC_DEFENSIVE_UPGRADE_V5_17:45"); }, []);
   const [recipes, setRecipes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState('scaler');
+  const [lastDeletedIngredient, setLastDeletedIngredient] = useState(null);
+  const [pendingIngredientCategory, setPendingIngredientCategory] = useState('PROTEIN');
+
+  // HEURISTIC: Calculate the actual weight of the recipe in the DB
+  // We use this as the scaling anchor in portion mode to fix messy metadata.
+  const sumWeight = useCallback((recipe) => {
+    if (!recipe || !recipe.ingredients) return 0;
+    return recipe.ingredients.reduce((acc, ing) => {
+      let qty = parseFloat(ing.qty) || 0;
+      const u = (ing.unit || '').toLowerCase();
+      // Mass/Volume conversion - Unified Codex V3.0
+      if (/^(kg|l|liter|litre|kilogram)s?$/.test(u)) qty *= 1000;
+      return acc + qty;
+    }, 0);
+  }, []);
   const [selectedId, setSelectedId] = useState(null);
   const [checkedItems, setCheckedItems] = useState({});
   const {
@@ -87,6 +127,22 @@ const SopMain = () => {
     setSidePortionSize,
     starterPortionSize,
     setStarterPortionSize,
+    portionWeightStew,
+    setPortionWeightStew,
+    portionWeightMeatStirFry,
+    setPortionWeightMeatStirFry,
+    portionWeightVegStirFry,
+    setPortionWeightVegStirFry,
+    portionWeightCurry,
+    setPortionWeightCurry,
+    portionWeightCarb,
+    setPortionWeightCarb,
+    portionWeightMainCarb,
+    setPortionWeightMainCarb,
+    portionWeightSide,
+    setPortionWeightSide,
+    portionWeightSalad,
+    setPortionWeightSalad,
     volumeFocus,
     setVolumeFocus,
     portionsPerBatch,
@@ -101,6 +157,8 @@ const SopMain = () => {
   const [editingIngId, setEditingIngId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [showDeleted, setShowDeleted] = useState(false);
+  const [isRecipeMenuOpen, setIsRecipeMenuOpen] = useState(false);
+  const [isMarketExportOpen, setIsMarketExportOpen] = useState(false);
   const [offlineStatus, setOfflineStatus] = useState(false);
   const [editIngBase, setEditIngBase] = useState(null); // {idx, field}
   const [isEditMode, setIsEditMode] = useState(false);
@@ -112,8 +170,29 @@ const SopMain = () => {
     mainPortionSize,
     sidePortionSize,
     starterPortionSize,
-    portionsPerBatch
-  }), [mainPortionSize, sidePortionSize, starterPortionSize, portionsPerBatch]);
+    portionsPerBatch,
+    portionWeightStew,
+    portionWeightMeatStirFry,
+    portionWeightVegStirFry,
+    portionWeightCurry,
+    portionWeightCarb,
+    portionWeightMainCarb,
+    portionWeightSide,
+    portionWeightSalad
+  }), [
+    mainPortionSize,
+    sidePortionSize,
+    starterPortionSize,
+    portionsPerBatch,
+    portionWeightStew,
+    portionWeightMeatStirFry,
+    portionWeightVegStirFry,
+    portionWeightCurry,
+    portionWeightCarb,
+    portionWeightMainCarb,
+    portionWeightSide,
+    portionWeightSalad
+  ]);
 
   const chefRound = useCallback((val, unit = '') =>
     coreChefRound(val, unit)
@@ -131,6 +210,10 @@ const SopMain = () => {
     coreGetPortionWeight(recipe, coreSettings, recipes)
     , [coreSettings, recipes]);
 
+  const getRecipePortionWeight = useCallback((recipe) =>
+    coreGetRecipePortionWeight(recipe, coreSettings, recipes)
+    , [coreSettings, recipes]);
+
   const getPortionSize = useCallback((recipe) =>
     coreGetPortionSize(recipe, coreSettings, recipes)
     , [coreSettings, recipes]);
@@ -139,6 +222,29 @@ const SopMain = () => {
     coreGetStandardBatchYield(recipe, coreSettings, recipes)
     , [coreSettings, recipes]);
 
+  const roundKitchenPortions = useCallback((value) => {
+    const numeric = parseFloat(value) || 0;
+    if (numeric <= 0) return 0;
+    const whole = Math.floor(numeric);
+    const fraction = numeric - whole;
+    return whole + (fraction > 0.5 ? 1 : 0);
+  }, []);
+
+  const formatPortionDisplay = useCallback((value) => {
+    const rounded = roundKitchenPortions(value);
+    return {
+      v: String(rounded),
+      u: rounded === 1 ? 'Portion' : 'Portions'
+    };
+  }, [roundKitchenPortions]);
+
+  const getBatchTargetGrams = useCallback((recipe, batchCount = 1) => {
+    if (!recipe) return 0;
+    const baseline = getRecipeBaselineGrams(recipe, false, coreSettings);
+    const standardBatchYield = getStandardBatchYield(recipe);
+    const perBatchTarget = standardBatchYield > 0 ? standardBatchYield : baseline;
+    return (parseFloat(batchCount) || 0) * perBatchTarget;
+  }, [coreSettings, getStandardBatchYield]);
 
   // SHARED STATE: Initialized with Base Yields
   const [planIntent, setPlanIntent] = useState({});
@@ -190,12 +296,23 @@ const SopMain = () => {
 
           // Extract rich strategy block from the legacy presentation JSON
           let strategy = {};
-          if (legacyMatch && legacyMatch.presentation_json) {
-            const pjson = typeof legacyMatch.presentation_json === 'string' ? JSON.parse(legacyMatch.presentation_json) : legacyMatch.presentation_json;
-            if (pjson.strategy) strategy = pjson.strategy;
+          let r = {};
+          try {
+            if (legacyMatch && legacyMatch.presentation_json) {
+              const pjson = typeof legacyMatch.presentation_json === 'string'
+                ? JSON.parse(legacyMatch.presentation_json)
+                : legacyMatch.presentation_json;
+              if (pjson?.strategy) strategy = pjson.strategy;
+            }
+          } catch (e) {
+            console.error("Presentation JSON Parse Error:", e);
           }
 
-          const r = typeof row.recipe_json === 'string' ? JSON.parse(row.recipe_json) : (row.recipe_json || {});
+          try {
+            r = typeof row.recipe_json === 'string' ? JSON.parse(row.recipe_json) : (row.recipe_json || {});
+          } catch (e) {
+            console.error("Recipe JSON Parse Error:", e);
+          }
 
           // Formulate the richest possible method breakdown
           const baseMethod = Array.isArray(row.method) && row.method.length > 0 ? row.method : (r.method || []);
@@ -224,6 +341,9 @@ const SopMain = () => {
             note: strategy.note || row.note || r.note || 'No operational notes provided.',
             dishStyle: row.dish_style || r.dishStyle || r.style || 'stewed',
             dishCategory: row.tier || row.cuisine_type || r.dishCategory || r.category || 'Tier 2 (Daily)',
+            portion_class: row.portion_class || r.portion_class || r.portionClass || '',
+            recorded_serving_weight: row.recorded_serving_weight ?? r.recorded_serving_weight ?? r.recordedServingWeight ?? null,
+            recorded_serving_unit: row.recorded_serving_unit || r.recorded_serving_unit || r.recordedServingUnit || 'g',
             production_strategy: row.production_strategy || 'dynamic_daily',
             production_batch_size: row.production_batch_size || null,
             is_deleted: row.is_deleted || false,
@@ -296,46 +416,53 @@ const SopMain = () => {
     Object.entries(planIntent).forEach(([id, intent]) => {
       const r = recipes.find(rec => rec.id === id);
       if (!r) return;
-
+      
       const { val, mode } = intent;
       const numericVal = parseFloat(val) || 0;
       if (numericVal <= 0) return;
 
-      const pWeight = getPortionWeight(r);
-      const bYield = r.baseYield || 1;
-
-      if (mode === 'portion') {
-        rawScales[id] = (numericVal * pWeight) / bYield;
-      } else if (mode === 'batch') {
-        // Use the standard batch yield (respects Prep vs Main dish logic)
-        const stdYield = getStandardBatchYield(r);
-        rawScales[id] = (numericVal * stdYield) / bYield;
-      } else if (mode === 'weight') {
-        rawScales[id] = numericVal / bYield;
+      const baseline = getRecipeBaselineGrams(r, false, coreSettings);
+      
+      let targetGrams = 0;
+      if (mode === 'batch') {
+        targetGrams = getBatchTargetGrams(r, numericVal);
+      } else if (mode === 'portion') {
+        const portionWeight = getRecipePortionWeight(r);
+        if (!portionWeight) return;
+        targetGrams = numericVal * portionWeight;
+      } else {
+        targetGrams = numericVal;
       }
+      
+      rawScales[id] = targetGrams / Math.max(0.001, baseline);
     });
 
-    // Step 2: Fallback to volumeFocus ONLY if no manual plan exists for ANY recipe
-    const hasManualPlan = Object.values(planIntent).some(v => (parseFloat(v.val) || 0) > 0);
+    // Step 2: Seed BOM ONLY with recipes that have explicit manual intent (Codex V3.8)
+    // Removed default 1.0 seeding to allow library recipes to show raw data without propagation noise.
+    if (Object.keys(rawScales).length === 0) return { nodes: {}, demand: {}, activeOrigins: {} };
 
-    if (!hasManualPlan) {
-      recipes.forEach(r => {
-        if (rootRecipeIds.has(r.id) && rawScales[r.id] === undefined) {
-          const mix = menuMix && menuMix[r.id] !== undefined ? parseFloat(menuMix[r.id]) / 100 : 1;
-          const targetPortions = volumeFocus * mix;
-          const pWeight = getPortionWeight(r);
-          const bYield = r.baseYield || 1;
-          rawScales[r.id] = (targetPortions * pWeight) / bYield;
-        }
-      });
-    }
-
-    return calculateBOM(recipes, rawScales, portionsPerBatch);
+    return calculateBOM(recipes, rawScales, portionsPerBatch, coreSettings);
   }, [recipes, volumeFocus, menuMix, planIntent, coreSettings, rootRecipeIds, getPortionWeight, getStandardBatchYield, portionsPerBatch]);
 
   const activeNodes = bomResult.nodes || {};
   const activeDemand = bomResult.demand || {};
   const activeOrigins = bomResult.activeOrigins || {};
+  const boardPortionTargets = useMemo(() => {
+    const next = {};
+    Object.entries(activeNodes).forEach(([id, node]) => {
+      const portions = parseFloat(node?.portions);
+      if (!isNaN(portions) && portions > 0) next[id] = portions;
+    });
+    return next;
+  }, [activeNodes]);
+
+  const recipeIdByName = useMemo(() => {
+    const next = {};
+    recipes.forEach((recipe) => {
+      if (recipe?.name) next[recipe.name.toLowerCase().trim()] = recipe.id;
+    });
+    return next;
+  }, [recipes]);
 
   // Unified Target Resolver (Vercel Best Practices: js-early-exit)
   const handleUpdateTarget = useCallback((recipeId, val, modeOverride = null) => {
@@ -345,11 +472,27 @@ const SopMain = () => {
     // Use current view mode as default if no override provided
     const mode = modeOverride || (portionMode ? 'portion' : 'batch');
 
+    let numericVal = parseFloat(val) || 0;
+
+    // STEP 4: Snapping removed to allow decimal precision (Codex V3.5)
+
     setPlanIntent(prev => ({
       ...prev,
-      [recipeId]: { val, mode }
+      [recipeId]: { val: numericVal, mode }
     }));
   }, [recipes, portionMode]);
+
+  const handleCommitTarget = useCallback((recipeId, mode) => {
+    if (mode !== 'portion') return;
+
+    const currentVal = parseFloat(planIntent[recipeId]?.val) || 0;
+    if (currentVal > 0 && currentVal < 2) {
+      setPlanIntent(prev => ({
+        ...prev,
+        [recipeId]: { val: 2, mode: 'portion' }
+      }));
+    }
+  }, [planIntent]);
 
   // Ensure activeRecipe stays within filtered results if searching
   const filteredRecipesList = useMemo(() => {
@@ -369,6 +512,11 @@ const SopMain = () => {
     return found || filteredRecipesList[0];
   }, [selectedId, filteredRecipesList]);
 
+  const linkableRecipes = useMemo(
+    () => recipes.filter(r => r.id && r.id !== activeRecipe?.id),
+    [recipes, activeRecipe?.id]
+  );
+
   // If activeRecipe switches due to search, update selectedId
   useEffect(() => {
     if (activeRecipe && activeRecipe.id !== selectedId) {
@@ -376,29 +524,118 @@ const SopMain = () => {
     }
   }, [activeRecipe?.id, selectedId]);
 
-  const activeNodeData = activeRecipe ? activeNodes[activeRecipe.id] : null;
-  const currentYieldValue = activeNodeData ? activeNodeData.weight : (activeRecipe?.baseYield || 0);
+  // STEP 2 — INTENT-AWARE SCALING CONTRACT
+  const hasIntent = !!planIntent[activeRecipe?.id];
+
+  const activeNodeData = (activeRecipe && hasIntent) ? activeNodes[activeRecipe.id] : null;
+  const baselineYieldGrams = activeRecipe ? getRecipeBaselineGrams(activeRecipe, false, coreSettings) : 0;
+  const baselineEdibleGrams = activeRecipe ? getRecipeBaselineGrams(activeRecipe, true, coreSettings) : 0;
+  const defaultProductionBatchGrams = activeRecipe ? getBatchTargetGrams(activeRecipe, 1) : 0;
+  const defaultProductionScaleFactor = (!portionMode && activeRecipe)
+    ? (defaultProductionBatchGrams / Math.max(0.001, baselineYieldGrams || 1))
+    : 1;
+
+  // STEP 1 — CONSOLIDATED CONTRACT (Codex V2.1)
+  const selectedBatchCount = !portionMode ? (planIntent[activeRecipe?.id]?.val || 1) : 1;
+  const selectedPortionCount = portionMode 
+    ? (planIntent[activeRecipe?.id]?.val || 0)
+    : portionsPerBatch;
+  
+  const isComponentRecipe = (() => {
+    if (!activeRecipe) return false;
+    const style = (activeRecipe.dishStyle || activeRecipe.style || '').toLowerCase();
+    const cat = (activeRecipe.dishCategory || '').toLowerCase();
+    const name = (activeRecipe.name || '').toLowerCase();
+
+    return isSauceLikeRecipe(activeRecipe) || 
+           ['sauce', 'glaze', 'marinade', 'coating', 'paste', 'dip', 'prep', 'base', 'stock', 'component'].includes(style) ||
+           ['condiment', 'sauce', 'topping', 'base', 'stock', 'prep', 'component'].includes(cat) ||
+           name.includes('sauce') || name.includes('marinade') || name.includes('roux') || name.includes('base') || name.includes('master') || name.includes('paste') || name.includes('prep');
+  })();
+  
+  const totalTargetPortions = !portionMode 
+    ? (isComponentRecipe ? selectedBatchCount : selectedBatchCount * portionsPerBatch) 
+    : selectedPortionCount;
+  const displayTargetPortions = roundKitchenPortions(totalTargetPortions);
+  const selectedDemandNode = activeRecipe ? activeNodes[activeRecipe.id] : null;
+  const selectedEstimatedUseGrams = selectedDemandNode?.demandWeight || 0;
+  const selectedShortageGrams = selectedDemandNode?.shortageWeight || 0;
+  const productionBatchCount = !portionMode
+    ? Number((selectedBatchCount || 1).toFixed(1))
+    : 1;
+  const productionPortionsPerBatch = portionsPerBatch;
+  const productionTotalPortions = Number((productionBatchCount * productionPortionsPerBatch).toFixed(1));
+
+  // STEP 2.5 — PURE SCALE FACTOR (Codex Phase 2 Root)
+  const rootScaleFactor = useMemo(() => {
+    if (!hasIntent || !activeRecipe) return 1.0;
+    const baseline = getRecipeBaselineGrams(activeRecipe, false, coreSettings);
+    const intent = planIntent[activeRecipe.id];
+    if (!intent || !intent.val) return 1.0;
+
+    let targetGrams = 0;
+    if (intent.mode === 'batch') {
+      targetGrams = getBatchTargetGrams(activeRecipe, intent.val);
+    } else if (intent.mode === 'portion') {
+      const portionWeight = getRecipePortionWeight(activeRecipe);
+      if (!portionWeight) return 1.0;
+      targetGrams = intent.val * portionWeight;
+    } else {
+      targetGrams = intent.val;
+    }
+    
+    return targetGrams / Math.max(0.001, baseline);
+  }, [hasIntent, activeRecipe, planIntent, coreSettings, recipes, getBatchTargetGrams]);
+
+  const displayScaleFactor = hasIntent ? rootScaleFactor : defaultProductionScaleFactor;
+  const currentYieldValue = activeNodeData
+    ? activeNodeData.weight
+    : (portionMode ? baselineYieldGrams : baselineYieldGrams * displayScaleFactor);
+  const currentEdibleYieldValue = activeNodeData
+    ? (activeNodeData.edibleWeight || activeNodeData.weight)
+    : (portionMode ? baselineEdibleGrams : baselineEdibleGrams * displayScaleFactor);
+  const resolvedRecipePortionWeight = activeRecipe ? getRecipePortionWeight(activeRecipe) : null;
   const currentPortionCount = activeNodeData
-    ? Math.round(activeNodeData.portions)
-    : (activeRecipe ? Math.round(activeRecipe.baseYield / Math.max(0.001, getPortionWeight(activeRecipe))) : 0);
+    ? Number(activeNodeData.portions.toFixed(1))
+    : (activeRecipe
+      ? Number((currentYieldValue / Math.max(0.001, resolvedRecipePortionWeight || coreGetPortionWeight(activeRecipe, coreSettings, recipes))).toFixed(1))
+      : 0);
+  const displayCurrentPortionCount = roundKitchenPortions(currentPortionCount);
+
+  const isScaled = hasIntent ? Math.abs(rootScaleFactor - 1) > 0.001 : false;
+
+  const portionWeightGrams = resolvedRecipePortionWeight || getPortionWeight(activeRecipe, coreSettings, recipes);
+  
+  // DEFENSIVE BASELINE: If no intent, use physical sumWeight directly (bypass BOM)
+  const totalEdibleWeightGrams = !hasIntent
+    ? (portionMode
+      ? (sumIngredientsGrams(activeRecipe) || activeRecipe?.baseYield || 1)
+      : currentEdibleYieldValue)
+    : (getRecipeBaselineGrams(activeRecipe, false, coreSettings) * rootScaleFactor);
+  const totalEdibleWeightFormatted = formatDisplay(totalEdibleWeightGrams, 'g');
 
   // Memoize grouped and sorted recipes for the selector (Vercel Best Practices: rerender-memo)
   // Memoize grouped and sorted recipes for the selector
   const groupedRecipes = useMemo(() => {
     const groups = filteredRecipesList.reduce((acc, r) => {
-      const style = r.dishStyle || r.style || 'Other';
+      const portionClass = (r.portion_class || r.portionClass || '').toLowerCase();
+      const style = (r.dishStyle || r.style || 'other').toLowerCase();
       const groupLabel =
-        style === 'prep' ? 'Foundational Prep (Tier 1)' :
-          style === 'marinade' ? 'Marinades & Pre-Prep' :
-            ['sauce', 'glaze'].includes(style) ? 'Finishing Sauces' :
-              ['grilled', 'fried', 'stir_fried', 'stew'].includes(style) ? 'Main Dishes' :
-                'Sides & Condiments';
+        portionClass === 'carb' ? 'Carb Base Recipes' :
+          portionClass === 'main_carb' ? 'Main + Carb Dishes' :
+            portionClass === 'salad' ? 'Salads' :
+              portionClass === 'side' ? 'Sides & Condiments' :
+                ['prep', 'base', 'component'].includes(portionClass) || style === 'prep' ? 'Foundational Prep (Tier 1)' :
+                  style === 'marinade' ? 'Marinades & Pre-Prep' :
+                    ['sauce', 'glaze'].includes(style) || portionClass === 'sauce' ? 'Finishing Sauces' :
+                      ['stew', 'curry', 'main', 'meat_stir_fry', 'veg_stir_fry'].includes(portionClass) || ['grilled', 'fried', 'stir_fried', 'stew', 'curry', 'main'].includes(style) ? 'Main Dishes' :
+                        'Sides & Condiments';
       if (!acc[groupLabel]) acc[groupLabel] = [];
       acc[groupLabel].push(r);
       return acc;
     }, {});
 
-    const order = ['Foundational Prep (Tier 1)', 'Marinades & Pre-Prep', 'Finishing Sauces', 'Main Dishes', 'Sides & Condiments'];
+    const order = ['Foundational Prep (Tier 1)', 'Carb Base Recipes', 'Marinades & Pre-Prep', 'Finishing Sauces', 'Main + Carb Dishes', 'Main Dishes', 'Salads', 'Sides & Condiments'];
     return Object.entries(groups).sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]));
   }, [filteredRecipesList]);
 
@@ -408,13 +645,9 @@ const SopMain = () => {
 
   const totalWeightForActive = useMemo(() => {
     if (!activeRecipe) return { v: 0, u: 'g' };
-    const pWeight = getPortionWeight(activeRecipe);
-    const unit = (activeRecipe.unit || '').toLowerCase();
-    if (unit.includes('portion')) {
-      return formatDisplay(currentYieldValue * pWeight, 'g');
-    }
-    return formatDisplay(currentYieldValue, activeRecipe.unit);
-  }, [activeRecipe, currentYieldValue, getPortionWeight, formatDisplay]);
+    // currentEdibleYieldValue reflects only edible mass (excluding process oil)
+    return formatDisplay(currentEdibleYieldValue, 'g');
+  }, [activeRecipe, currentEdibleYieldValue, formatDisplay]);
 
   const isBulkMode = useMemo(() => {
     // Volume focus of 300 or 600+ automatically triggers bulk mode for efficiency
@@ -422,67 +655,13 @@ const SopMain = () => {
     return currentYieldValue >= (activeRecipe?.bulkThreshold || 50);
   }, [currentYieldValue, activeRecipe, volumeFocus]);
 
-
-  const handleRoundAndFix = () => {
-    if (!activeRecipe) return;
-
-    let bestYield = currentYieldValue;
-    let minTotalVariance = Infinity;
-
-    // Search range: ±15% of current yield.
-    const searchRange = Math.max(activeRecipe.baseYield * 0.1, currentYieldValue * 0.15);
-    const step = activeRecipe.baseYield * 0.01; // Fine granularity
-
-    for (let y = Math.max(0.1, currentYieldValue - searchRange); y <= currentYieldValue + searchRange; y += step) {
-      const f = y / activeRecipe.baseYield;
-      let variance = 0;
-
-      activeRecipe.ingredients.forEach(ing => {
-        // Only optimize measurable quantities
-        if (!ing.qty || ing.qty <= 0) return;
-
-        const ideal = ing.qty * f;
-        let displayUnit = (ing.unit || '').toLowerCase();
-        let displayVal = ideal;
-
-        // Match formatQuantity logic for accurate chefRound targeting
-        if (displayUnit === 'g' && ideal >= 1000) { displayVal = ideal / 1000; displayUnit = 'kg'; }
-        else if (displayUnit === 'ml' && ideal >= 1000) { displayVal = ideal / 1000; displayUnit = 'L'; }
-
-        const roundedDisplay = chefRound(displayVal, displayUnit);
-
-        // Calculate absolute mathematical distance from the rounded 'clean' number
-        // High penalty for decimal values (we want 150g, not 151.2g)
-        const error = Math.abs(displayVal - roundedDisplay) / (displayVal || 1);
-
-        // Add additional penalty if the rounded number itself is not a whole integer
-        // (This heavily pushes the solver toward choosing a yield that makes ingredients land on round integers like 50, 100, instead of 53.5)
-        const integerPenalty = Number.isInteger(roundedDisplay) ? 0 : 0.5;
-
-        variance += (error + integerPenalty);
-      });
-
-      if (variance < minTotalVariance) {
-        minTotalVariance = variance;
-        bestYield = y;
-      }
-    }
-
-    const finalVal = portionMode
-      ? Math.round(bestYield / (getPortionSize(activeRecipe) || 1))
-      : Number(bestYield.toFixed(2));
-
-    const mode = portionMode ? 'portion' : 'weight';
-    setPlanIntent({ ...planIntent, [selectedId]: { val: finalVal, mode } });
-  };
-
   const handleReverseScale = (ing, newQty) => {
     if (!activeRecipe || !newQty || newQty <= 0) return;
     const factor = newQty / ing.qty;
     const newYield = activeRecipe.baseYield * factor;
 
     const finalVal = portionMode
-      ? Math.round(newYield / (getPortionSize(activeRecipe) || 1))
+      ? Number((newYield / (getPortionSize(activeRecipe) || 1)).toFixed(1))
       : Number(newYield.toFixed(2));
 
     const mode = portionMode ? 'portion' : 'weight';
@@ -524,13 +703,19 @@ const SopMain = () => {
         cuisine: activeRecipe.cuisine,
         occasion: activeRecipe.occasion,
         yield_unit: activeRecipe.unit,
-        base_yield: activeRecipe.baseYield
+        base_yield: activeRecipe.baseYield,
+        yield_mode: activeRecipe.yieldMode,
+        serving_kind: activeRecipe.serving_kind,
+        serving_size: activeRecipe.servingSize,
+        batch_yield: activeRecipe.batchYield,
+        portion_class: activeRecipe.portion_class || null,
+        recorded_serving_weight: activeRecipe.recorded_serving_weight ? parseFloat(activeRecipe.recorded_serving_weight) : null,
+        recorded_serving_unit: activeRecipe.recorded_serving_unit || null
       }).eq('recipe_id', activeRecipe.id);
       if (error) throw error;
       // Alert removed per user request for silent saving
     } catch (err) {
       console.error("Save failed:", err);
-      alert("Failed to save updates.");
     }
   };
 
@@ -543,6 +728,169 @@ const SopMain = () => {
     newIngredients[idx] = { ...newIngredients[idx], ...updates };
     updateActiveRecipeLocal({ ingredients: newIngredients });
   };
+
+  const updateIngredientLink = (idx, linkedRecipeId) => {
+    if (!activeRecipe?.ingredients) return;
+    const nextSku = linkedRecipeId || '';
+    updateIngredientLocal(idx, { sku: nextSku });
+  };
+
+  const normalizeIngredientCategory = useCallback((category) => {
+    const nextCategory = (category || 'OTHER').toUpperCase();
+    if (nextCategory === 'WET' || nextCategory === 'LIQUID') return 'WET / LIQUID';
+    return nextCategory;
+  }, []);
+
+  const persistIngredientCategory = useCallback((category) => {
+    const normalized = normalizeIngredientCategory(category);
+    if (normalized === 'WET / LIQUID') return 'wet';
+    return normalized.toLowerCase();
+  }, [normalizeIngredientCategory]);
+
+  const handleDeleteIngredient = (idx) => {
+    if (!activeRecipe?.ingredients) return;
+    const deletedIngredient = activeRecipe.ingredients[idx];
+    const newIngredients = activeRecipe.ingredients.filter((_, ingredientIdx) => ingredientIdx !== idx);
+    setLastDeletedIngredient(
+      deletedIngredient
+        ? {
+            recipeId: activeRecipe.id,
+            ingredient: deletedIngredient,
+            index: idx
+          }
+        : null
+    );
+    updateActiveRecipeLocal({ ingredients: newIngredients });
+    if (editingIngId === idx) {
+      setEditingIngId(null);
+    } else if (editingIngId > idx) {
+      setEditingIngId(editingIngId - 1);
+    }
+  };
+
+  const handleAddIngredient = (category) => {
+    if (!activeRecipe?.ingredients) return;
+
+    const normalizedCategory = normalizeIngredientCategory(category);
+    const nextIngredient = {
+      name: '',
+      qty: 0,
+      unit: LIQUID_LIKE_CATEGORIES.has(normalizedCategory) ? 'ml' : 'g',
+      sku: '',
+      category: persistIngredientCategory(normalizedCategory)
+    };
+
+    const currentIngredients = [...activeRecipe.ingredients];
+    let insertAt = currentIngredients.length;
+
+    for (let i = currentIngredients.length - 1; i >= 0; i -= 1) {
+      if (normalizeIngredientCategory(currentIngredients[i]?.category || currentIngredients[i]?.cat || 'OTHER') === normalizedCategory) {
+        insertAt = i + 1;
+        break;
+      }
+    }
+
+    currentIngredients.splice(insertAt, 0, nextIngredient);
+    updateActiveRecipeLocal({ ingredients: currentIngredients });
+    setEditingIngId(insertAt);
+    setLastDeletedIngredient(null);
+  };
+
+  const handleUndoDeleteIngredient = () => {
+    if (!lastDeletedIngredient || !activeRecipe || lastDeletedIngredient.recipeId !== activeRecipe.id) return;
+
+    const restoredIngredients = [...(activeRecipe.ingredients || [])];
+    const restoreIndex = Math.min(lastDeletedIngredient.index, restoredIngredients.length);
+    restoredIngredients.splice(restoreIndex, 0, lastDeletedIngredient.ingredient);
+    updateActiveRecipeLocal({ ingredients: restoredIngredients });
+    setLastDeletedIngredient(null);
+  };
+
+  const getDefaultIntentForRecipe = useCallback((recipe) => {
+    if (!recipe) return { val: 0, mode: portionMode ? 'portion' : 'batch' };
+
+    if (portionMode) {
+      const baselineGrams = getRecipeBaselineGrams(recipe, false, coreSettings);
+      const portionWeight = getRecipePortionWeight(recipe);
+      if (!portionWeight) return { val: 0, mode: 'portion' };
+      return {
+        val: Number((baselineGrams / portionWeight).toFixed(1)),
+        mode: 'portion'
+      };
+    }
+
+    return { val: 1, mode: 'batch' };
+  }, [portionMode, coreSettings, recipes, getRecipePortionWeight]);
+
+  const handleDefaultAll = useCallback(() => {
+    if (portionMode) {
+      setPlanIntent({});
+      setMenuMix({});
+      return;
+    }
+
+    const reset = {};
+    recipes.forEach(r => {
+      reset[r.id] = getDefaultIntentForRecipe(r);
+    });
+    setPlanIntent(reset);
+    setMenuMix({});
+  }, [portionMode, recipes, getDefaultIntentForRecipe, setMenuMix]);
+
+  const handleDefaultSelected = useCallback(() => {
+    if (!activeRecipe?.id) return;
+
+    if (portionMode) {
+      setPlanIntent(prev => {
+        const next = { ...prev };
+        delete next[activeRecipe.id];
+        return next;
+      });
+      return;
+    }
+
+    setPlanIntent(prev => ({
+      ...prev,
+      [activeRecipe.id]: getDefaultIntentForRecipe(activeRecipe)
+    }));
+  }, [activeRecipe, portionMode, getDefaultIntentForRecipe]);
+
+  const handleEnterEditMode = useCallback(() => {
+    handleDefaultAll();
+    setEditingIngId(null);
+    setCheckedItems({});
+    setLastDeletedIngredient(null);
+    setIsEditMode(true);
+  }, [handleDefaultAll]);
+
+  const activeDefaultIntent = activeRecipe ? getDefaultIntentForRecipe(activeRecipe) : { val: 0, mode: portionMode ? 'portion' : 'batch' };
+
+  const ingredientCategoryEntries = useMemo(() => {
+    const grouped = (activeRecipe?.ingredients || []).reduce((acc, ing) => {
+      const category = normalizeIngredientCategory(ing?.category || ing?.cat || 'OTHER');
+      if (!acc[category]) acc[category] = [];
+      acc[category].push(ing);
+      return acc;
+    }, {});
+
+    const categories = Object.keys(grouped);
+
+    return categories
+      .filter((category) => grouped[category] && grouped[category].length > 0)
+      .sort((a, b) => {
+        if (a === 'WET / LIQUID') return -1;
+        if (b === 'WET / LIQUID') return 1;
+
+        const orderA = EDIT_CATEGORY_ORDER.indexOf(a);
+        const orderB = EDIT_CATEGORY_ORDER.indexOf(b);
+        const safeOrderA = orderA === -1 ? EDIT_CATEGORY_ORDER.length : orderA;
+        const safeOrderB = orderB === -1 ? EDIT_CATEGORY_ORDER.length : orderB;
+
+        if (safeOrderA !== safeOrderB) return safeOrderA - safeOrderB;
+        return a.localeCompare(b);
+      })
+      .map((category) => [category, grouped[category] || []]);
+  }, [activeRecipe?.ingredients, normalizeIngredientCategory]);
 
   // AUTO-SAVE LOGIC: Syncs to Supabase when active recipe changes
   useEffect(() => {
@@ -609,30 +957,25 @@ const SopMain = () => {
       if (!recipe || !recipe.ingredients) return;
 
       recipe.ingredients.forEach(ing => {
-        // Use professional resolver to check if this is a sub-recipe
         const resolvedChildId = resolveRecipeId(ing, recipes);
-        if (resolvedChildId) return; // Skip sub-recipes to avoid double counting
+        if (resolvedChildId) return; // Skip sub-recipes
 
-        let baseQty = parseFloat(ing.qty) || 0;
-        let baseUnit = (ing.unit || 'units').toLowerCase();
+        const baselineGrams = getRecipeBaselineGrams(recipe, false, coreSettings);
+        const ingGrams = toGrams(ing.qty, ing.unit);
+        const scaledQtyGrams = (ingGrams / Math.max(0.001, baselineGrams)) * totalYield;
 
-        // Standardize weight/volume to base units (g/ml) for aggregation
-        if (/^(kg)s?$/.test(baseUnit)) { baseQty *= 1000; baseUnit = 'g'; }
-        else if (/^(l|liter|litre)s?$/.test(baseUnit)) { baseQty *= 1000; baseUnit = 'ml'; }
-
-        const scaledQty = (baseQty / (parseFloat(recipe.baseYield) || 1)) * totalYield;
-        // Canonical SKU or fallback to normalized name-unit pair
-        const sku = ing.sku || `${ing.name.toLowerCase().trim().replace(/\s+/g, '-')}-${baseUnit}`;
+        // Canonical SKU
+        const sku = ing.sku || `${(ing.name || 'unknown').toLowerCase().trim().replace(/\s+/g, '-')}-g`;
 
         if (!totals[sku]) {
           totals[sku] = {
             name: ing.name,
             cat: ing.cat || ing.category || 'other',
             qty: 0,
-            unit: baseUnit
+            unit: 'g' // Aggregate in grams for accuracy, then formatDisplay will handle it
           };
         }
-        totals[sku].qty += scaledQty;
+        totals[sku].qty += scaledQtyGrams;
       });
     });
 
@@ -646,12 +989,63 @@ const SopMain = () => {
   }, [activeDemand, recipes]);
 
 
+  // STEP 5: CROSS-VIEW CONSISTENCY VALIDATION
+  useEffect(() => {
+    if (!activeDemand || !aggregatedOrder || Object.keys(activeDemand).length === 0) return;
+
+    // Flatten Market view for O(1) comparison
+    const flattenedMarket = {};
+    Object.values(aggregatedOrder).forEach(categoryItems => {
+      categoryItems.forEach(it => {
+        // Use normalized key matching aggregatedOrder logic
+        const key = (it.name || 'unknown').toLowerCase().trim().replace(/\s+/g, '-');
+        flattenedMarket[key] = (flattenedMarket[key] || 0) + it.qty;
+      });
+    });
+
+    const expectedTotals = {};
+    Object.entries(activeDemand).forEach(([recipeId, totalYield]) => {
+      if (totalYield <= 0) return;
+      const recipe = recipes.find(r => r.id === recipeId);
+      if (!recipe || !recipe.ingredients) return;
+
+      recipe.ingredients.forEach(ing => {
+        if (resolveRecipeId(ing, recipes)) return; // Skip sub-recipes
+
+        let bQty = parseFloat(ing.qty) || 0;
+        let bUnit = (ing.unit || 'units').toLowerCase();
+        if (/^(kg)s?$/.test(bUnit)) { bQty *= 1000; }
+        else if (/^(l|liter|litre)s?$/.test(bUnit)) { bQty *= 1000; }
+
+        const recipeMassRaw = sumWeight(recipe);
+        const scaled = (bQty / (recipeMassRaw || parseFloat(recipe.baseYield) || 1)) * totalYield;
+        const key = (ing.name || 'unknown').toLowerCase().trim().replace(/\s+/g, '-');
+        expectedTotals[key] = (expectedTotals[key] || 0) + scaled;
+      });
+    });
+
+    // Compare and Log Discrepancies
+    Object.keys(expectedTotals).forEach(key => {
+      const expected = expectedTotals[key];
+      const actual = flattenedMarket[key] || 0;
+      const delta = Math.abs(expected - actual);
+
+      // Allow 1% drift for floating point math
+      if (delta > (expected * 0.01) + 0.01) {
+        console.warn(`[VAL] Cross-view drift detected for "${key}": Scaler predicts ${expected.toFixed(2)}, but Market shows ${actual.toFixed(2)}`);
+      }
+    });
+  }, [activeDemand, aggregatedOrder, recipes]);
+
+
   const handleCsvDownload = () => {
-    const factor = currentYieldValue / activeRecipe.baseYield;
-    let csv = `RECIPE,${activeRecipe.name.toUpperCase()}\nTARGET YIELD,${currentYieldValue},${activeRecipe.unit}\n\nCATEGORY,ITEM,SKU,SCALED_WEIGHT,UNIT\n`;
-    activeRecipe.ingredients.forEach(ing => {
-      const { val: v, unit: u } = formatQuantity(ing.qty * factor, ing.unit);
-      csv += `${ing.cat || ing.category || 'other'},${ing.name.replace(/,/g, '')},${ing.sku},${v},${u}\n`;
+    if (!activeRecipe) return;
+    const recipeMassRaw = sumWeight(activeRecipe);
+    const factor = currentYieldValue / (recipeMassRaw || activeRecipe?.baseYield || 1);
+    let csv = `RECIPE,${(activeRecipe?.name || 'UNKNOWN').toUpperCase()}\nTARGET YIELD,${currentYieldValue || 0},${activeRecipe?.unit || 'g'}\n\nCATEGORY,ITEM,SKU,SCALED_WEIGHT,UNIT\n`;
+    (activeRecipe?.ingredients || []).forEach(ing => {
+      const { val: v, unit: u } = formatQuantity((ing?.qty || 0) * factor, ing?.unit);
+      csv += `${(ing?.category || 'OTHER').toUpperCase()},${translateIngredient(ing?.name)},${ing?.sku || ''},${v},${u}\n`;
     });
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
@@ -674,54 +1068,93 @@ const SopMain = () => {
   );
 
   return (
-    <div className="min-h-screen bg-app-bg text-app-text font-sans p-2 md:p-6 selection:bg-app-accent selection:text-app-bg">
+    <div className="box-border min-h-screen w-full overflow-x-hidden bg-app-bg text-app-text font-sans p-2 md:p-4 selection:bg-app-accent selection:text-app-bg">
 
       {/* PROFESSIONAL NAV */}
-      <nav className="max-w-[1280px] mx-auto flex items-center justify-between gap-3 mb-6 print:hidden">
-        <div className="flex items-center gap-2">
+      <nav
+        className="box-border w-full min-w-0 mx-auto mb-5 print:hidden"
+        style={{ width: '100%', maxWidth: '1000px' }}
+      >
+        <div className="grid min-w-0 gap-2 xl:grid-cols-[240px_minmax(0,1fr)_168px] xl:items-center">
+        <div className="flex min-w-0 items-center gap-2 xl:w-[240px] xl:justify-self-start">
           {config.logo ? <img src={config.logo} alt={config.name} className="h-8" /> : <ChefHat className="text-app-accent" size={24} />}
-          <h1 className="font-black text-lg uppercase tracking-tight text-app-text">
+          <h1 className="min-w-0 truncate whitespace-nowrap font-black text-[13px] 2xl:text-sm uppercase tracking-tight text-app-text">
             {config.name} <span className="text-app-muted font-light">{config.subTitle}</span>
           </h1>
         </div>
 
-        <div className="flex items-center bg-app-surface border border-app-border rounded-lg p-1 gap-1">
-          <button onClick={() => setView('scaler')} className={`flex items-center gap-2 px-6 py-2.5 font-bold uppercase text-[10px] rounded transition-colors ${view === 'scaler' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
-            <Scale size={14} /> Scaler
+        <div className="flex min-w-0 flex-nowrap items-center justify-center overflow-hidden bg-app-surface border border-app-border rounded-lg p-1 gap-1 xl:justify-self-center">
+          <button onClick={() => setView('scaler')} className={`flex items-center gap-1.5 px-2.5 2xl:px-3 py-2 font-bold uppercase text-[8px] 2xl:text-[9px] rounded transition-colors whitespace-nowrap ${view === 'scaler' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
+            <Scale size={12} /> Scaler
           </button>
-          <button onClick={() => setView('ordering')} className={`flex items-center gap-2 px-6 py-2.5 font-bold uppercase text-[10px] rounded transition-colors ${view === 'ordering' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
-            <ShoppingCart size={14} /> Market
+          <button onClick={() => setView('ordering')} className={`flex items-center gap-1.5 px-2.5 2xl:px-3 py-2 font-bold uppercase text-[8px] 2xl:text-[9px] rounded transition-colors whitespace-nowrap ${view === 'ordering' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
+            <ShoppingCart size={12} /> Market
           </button>
-          <button onClick={() => setView('board')} className={`flex items-center gap-2 px-6 py-2.5 font-bold uppercase text-[10px] rounded transition-colors ${view === 'board' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
-            <ClipboardCheck size={14} /> Board
+          <button onClick={() => setView('board')} className={`flex items-center gap-1.5 px-2.5 2xl:px-3 py-2 font-bold uppercase text-[8px] 2xl:text-[9px] rounded transition-colors whitespace-nowrap ${view === 'board' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
+            <ClipboardCheck size={12} /> Board
           </button>
-          <button onClick={() => setView('presentation')} className={`flex items-center gap-2 px-6 py-2.5 font-bold uppercase text-[10px] rounded transition-colors ${view === 'presentation' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
-            <LayoutDashboard size={14} /> Presentation
+          <button onClick={() => setView('presentation')} className={`flex items-center gap-1.5 px-2.5 2xl:px-3 py-2 font-bold uppercase text-[8px] 2xl:text-[9px] rounded transition-colors whitespace-nowrap ${view === 'presentation' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
+            <LayoutDashboard size={12} /> Presentation
           </button>
-          <button onClick={() => setView('settings')} className={`flex items-center gap-2 px-6 py-2.5 font-bold uppercase text-[10px] rounded transition-colors ${view === 'settings' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
-            <SettingsIcon size={14} /> Master Rules
+          <button onClick={() => setView('settings')} className={`flex items-center gap-1.5 px-2.5 2xl:px-3 py-2 font-bold uppercase text-[8px] 2xl:text-[9px] rounded transition-colors whitespace-nowrap ${view === 'settings' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
+            <SettingsIcon size={12} /> Master Rules
           </button>
         </div>
 
-        <div className="flex bg-app-surface border border-app-border rounded-lg p-1 gap-1">
-          <button
-            onClick={() => setPortionMode(!portionMode)}
-            className={`flex items-center gap-2 px-4 py-1.5 min-w-[140px] justify-center text-[10px] font-black uppercase rounded transition-all border ${portionMode ? 'bg-amber-500 text-white border-amber-600 shadow-lg shadow-amber-500/20' : 'bg-app-surface text-app-accent border-app-border'}`}
-          >
-            {portionMode ? <Utensils size={14} /> : <Beef size={14} />}
-            {portionMode ? "Test (Portions)" : "Production Mode"}
-          </button>
+        <div className="flex w-full min-w-0 xl:w-full xl:justify-self-end xl:justify-end">
+          {view === 'scaler' ? (
+            <div className="flex w-full flex-nowrap items-center bg-app-surface border border-app-border rounded-lg p-1 gap-1 xl:w-auto">
+              <button
+                onClick={() => setPortionMode(false)}
+                className={`flex flex-1 items-center gap-1 px-2 py-1.5 min-w-[78px] justify-center text-[8px] font-black uppercase rounded transition-all border xl:flex-none ${!portionMode ? 'bg-app-accent text-app-bg border-app-accent shadow-lg shadow-app-accent/20' : 'bg-app-surface text-app-muted border-app-border hover:text-app-text'}`}
+              >
+                <Beef size={11} />
+                Batch
+              </button>
+              <button
+                onClick={() => setPortionMode(true)}
+                className={`flex flex-1 items-center gap-1 px-2 py-1.5 min-w-[78px] justify-center text-[8px] font-black uppercase rounded transition-all border xl:flex-none ${portionMode ? 'bg-amber-500 text-white border-amber-600 shadow-lg shadow-amber-500/20' : 'bg-app-surface text-app-muted border-app-border hover:text-app-text'}`}
+              >
+                <Utensils size={11} />
+                Portion
+              </button>
+            </div>
+          ) : (
+            <div className="invisible h-[36px] w-full xl:w-[168px]" aria-hidden="true" />
+          )}
+        </div>
         </div>
       </nav>
 
-      <div className="max-w-[1280px] mx-auto">
+      {view === 'board' ? (
+        <div
+          className="box-border w-full min-w-0 mx-auto overflow-x-hidden animate-in fade-in slide-in-from-bottom-4 duration-500"
+          style={{ width: '100%', maxWidth: '1000px' }}
+        >
+          <Suspense fallback={<div className="h-[600px] flex items-center justify-center bg-app-surface border border-app-border rounded-xl">Loading Command Board...</div>}>
+            <CommandBoard
+              clientId={clientSlug || 'kabile'}
+              onExit={() => setView('scaler')}
+              productionTargets={activeDemand}
+              portionTargets={boardPortionTargets}
+              recipes={recipes.filter(r => !r.is_deleted)}
+            />
+          </Suspense>
+        </div>
+      ) : (
+      <div
+        className={`box-border w-full min-w-0 mx-auto ${view === 'presentation' ? 'overflow-x-auto' : 'overflow-x-hidden'}`}
+        style={{ width: '100%', maxWidth: view === 'presentation' ? '1320px' : '1000px' }}
+      >
         {view === 'presentation' && (
-          <div className="animate-in fade-in slide-in-from-right-8 duration-500 max-w-4xl mx-auto">
+          <div className="animate-in fade-in slide-in-from-right-8 duration-500 w-full min-w-[1120px] max-w-none mx-auto">
             <Suspense fallback={<div className="h-[600px] flex items-center justify-center bg-app-surface border border-app-border rounded-xl">Loading Presentation Core...</div>}>
               {activeRecipe ? (
                 <CinematicSOP
                   clientId={clientSlug || 'kabile'}
                   initialDishName={activeRecipe.name}
+                  portionTargets={boardPortionTargets}
+                  recipeIdByName={recipeIdByName}
                   onExit={() => setView('scaler')}
                 />
               ) : (
@@ -797,79 +1230,43 @@ const SopMain = () => {
                 <div className="space-y-8">
                   <section className="space-y-4">
                     <h3 className="text-[10px] font-black uppercase tracking-widest text-app-accent flex items-center gap-2">
-                      <Scale size={14} /> Master Portion Weights (Standard)
+                      <Scale size={14} /> Portion Class Standards
                     </h3>
                     <div className="grid grid-cols-1 gap-4">
-                      <div className="flex items-center justify-between p-6 bg-app-bg border border-app-border rounded-xl relative overflow-hidden group">
-                        <div className="relative z-10">
-                          <p className="text-xs font-black text-app-text uppercase">Main Dish Portion</p>
-                          <p className="text-[8px] text-app-muted uppercase font-bold">Standard Weight (g/ml)</p>
+                      <div className="bg-app-bg p-6 border border-app-border rounded-xl">
+                        <div className="mb-4">
+                          <p className="text-xs font-black text-app-text uppercase">Portion Class Standards</p>
+                          <p className="text-[8px] text-app-muted uppercase font-bold">Used when a recipe has no recorded serving weight</p>
                         </div>
-                        <div className="relative z-10 flex items-center gap-4">
-                          <input
-                            type="number"
-                            value={mainPortionSize}
-                            onChange={(e) => setMainPortionSize(parseInt(e.target.value) || 0)}
-                            className="bg-app-surface border border-app-border rounded p-2 w-20 text-right font-black text-2xl text-app-accent outline-none focus:border-app-accent"
-                          />
-                          <span className="text-[10px] font-black text-app-muted">G</span>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          {[
+                            ['Stew', portionWeightStew, setPortionWeightStew],
+                            ['Meat Stir Fry', portionWeightMeatStirFry, setPortionWeightMeatStirFry],
+                            ['Veg Stir Fry', portionWeightVegStirFry, setPortionWeightVegStirFry],
+                            ['Curry', portionWeightCurry, setPortionWeightCurry],
+                            ['Carb', portionWeightCarb, setPortionWeightCarb],
+                            ['Main + Carb', portionWeightMainCarb, setPortionWeightMainCarb],
+                            ['Side', portionWeightSide, setPortionWeightSide],
+                            ['Salad', portionWeightSalad, setPortionWeightSalad]
+                          ].map(([label, value, setter]) => (
+                            <label key={label} className="flex items-center justify-between gap-3 bg-app-surface border border-app-border rounded-lg px-3 py-2">
+                              <span className="text-[10px] font-black uppercase text-app-text">{label}</span>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="number"
+                                  value={value}
+                                  onChange={(e) => setter(parseInt(e.target.value) || 0)}
+                                  className="bg-app-bg border border-app-border rounded px-2 py-1 w-20 text-right font-black text-lg text-app-accent outline-none focus:border-app-accent"
+                                />
+                                <span className="text-[9px] font-black text-app-muted">G</span>
+                              </div>
+                            </label>
+                          ))}
                         </div>
-                        <Beef className="absolute -bottom-2 -right-2 text-app-accent/5" size={80} />
-                      </div>
-
-                      <div className="flex items-center justify-between p-6 bg-app-bg border border-app-border rounded-xl relative overflow-hidden group">
-                        <div className="relative z-10">
-                          <p className="text-xs font-black text-app-text uppercase">Batch Size (Standard)</p>
-                          <p className="text-[8px] text-app-muted uppercase font-bold">Portions per Batch</p>
-                        </div>
-                        <div className="relative z-10 flex items-center gap-4">
-                          <input
-                            type="number"
-                            value={portionsPerBatch}
-                            onChange={(e) => setPortionsPerBatch(parseInt(e.target.value) || 0)}
-                            className="bg-app-surface border border-app-border rounded p-2 w-20 text-right font-black text-2xl text-app-accent outline-none focus:border-app-accent"
-                          />
-                          <span className="text-[10px] font-black text-app-muted">PORTIONS</span>
-                        </div>
-                        <Package className="absolute -bottom-2 -right-2 text-app-accent/5" size={80} />
-                      </div>
-
-                      <div className="flex items-center justify-between p-6 bg-app-bg border border-app-border rounded-xl relative overflow-hidden group">
-                        <div className="relative z-10">
-                          <p className="text-xs font-black text-app-text uppercase">Side Dish Portion</p>
-                          <p className="text-[8px] text-app-muted uppercase font-bold">Heuristic Weight (g/ml)</p>
-                        </div>
-                        <div className="relative z-10 flex items-center gap-4">
-                          <input
-                            type="number"
-                            value={sidePortionSize}
-                            onChange={(e) => setSidePortionSize(parseInt(e.target.value) || 0)}
-                            className="bg-app-surface border border-app-border rounded p-2 w-20 text-right font-black text-2xl text-app-accent outline-none focus:border-app-accent"
-                          />
-                          <span className="text-[10px] font-black text-app-muted">G</span>
-                        </div>
-                        <Wind className="absolute -bottom-2 -right-2 text-app-accent/5" size={80} />
-                      </div>
-
-                      <div className="flex items-center justify-between p-6 bg-app-bg border border-app-border rounded-xl relative overflow-hidden group">
-                        <div className="relative z-10">
-                          <p className="text-xs font-black text-app-text uppercase">Starter Dish Portion</p>
-                          <p className="text-[8px] text-app-muted uppercase font-bold">Standard Weight (g/ml)</p>
-                        </div>
-                        <div className="relative z-10 flex items-center gap-4">
-                          <input
-                            type="number"
-                            value={starterPortionSize}
-                            onChange={(e) => setStarterPortionSize(parseInt(e.target.value) || 0)}
-                            className="bg-app-surface border border-app-border rounded p-2 w-20 text-right font-black text-2xl text-app-accent outline-none focus:border-app-accent"
-                          />
-                          <span className="text-[10px] font-black text-app-muted">G</span>
-                        </div>
-                        <Utensils className="absolute -bottom-2 -right-2 text-app-accent/5" size={80} />
                       </div>
                     </div>
                     <p className="text-[9px] font-bold text-app-muted uppercase italic bg-app-accent/5 p-3 rounded-lg border border-app-accent/10">
-                      Note: These weights are used globally to calculate portion counts from total production yields.
+                      Note: Recorded recipe serving weight wins first. If missing, the selected portion class weight is used. Legacy defaults only apply as last fallback.
                     </p>
                   </section>
                 </div>
@@ -887,25 +1284,12 @@ const SopMain = () => {
           </div>
         )}
 
-        {view === 'board' && (
-          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <Suspense fallback={<div className="h-[600px] flex items-center justify-center bg-app-surface border border-app-border rounded-xl">Loading Command Board...</div>}>
-              <CommandBoard
-                clientId={clientSlug || 'kabile'}
-                onExit={() => setView('scaler')}
-                productionTargets={activeDemand}
-                recipes={recipes.filter(r => r.show_on_board && !r.is_deleted)}
-              />
-            </Suspense>
-          </div>
-        )}
-
         {view === 'scaler' && (
-          <div className="space-y-4 animate-in fade-in duration-500">
+          <div className="w-full min-w-0 space-y-3 animate-in fade-in duration-500">
 
             {/* NEW TOP TOOLBAR: Search & Global Utility */}
-            <div className="flex items-center justify-between gap-4 bg-app-surface border border-app-border p-3 rounded-lg shadow-sm">
-              <div className="relative flex-1 max-w-md">
+            <div className="flex min-w-0 flex-col gap-2.5 xl:flex-row xl:items-center xl:justify-between bg-app-surface border border-app-border p-2.5 rounded-lg shadow-sm">
+              <div className="relative min-w-0 flex-1 max-w-full xl:max-w-md">
                 <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-app-muted" />
                 <input
                   type="text"
@@ -914,99 +1298,151 @@ const SopMain = () => {
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full bg-app-bg border border-app-border rounded-lg pl-10 pr-4 py-2 text-sm font-medium outline-none focus:border-app-accent focus:ring-1 focus:ring-app-accent/20 transition-all"
                 />
-              </div>
-              <div className="flex items-center gap-2">
-                {isEditMode && (
-                  <button
-                    onClick={async () => {
-                      await handleUpdateRecipe();
-                      setIsEditMode(false);
-                    }}
-                    className="flex items-center gap-2 px-3 py-1.5 bg-app-accent text-app-bg hover:brightness-110 rounded-lg text-[10px] font-black uppercase transition-all shadow-lg shadow-app-accent/20 border border-app-accent"
-                  >
-                    <Save size={12} /> SAVE TEMPLATE
-                  </button>
-                )}
-                <button
-                  onClick={() => setShowDeleted(!showDeleted)}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-black uppercase transition-all border ${showDeleted ? 'bg-red-500 text-white border-red-600 shadow-lg shadow-red-500/20' : 'bg-app-bg text-app-muted border-app-border hover:border-app-muted'}`}
-                >
-                  {showDeleted ? <Undo2 size={14} /> : <Trash2 size={14} />}
-                  {showDeleted ? "Back to Library" : "Restore Bin"}
-                </button>
-              </div>
+	              </div>
+	              <div className="flex min-w-0 flex-wrap items-center gap-1.5 xl:shrink-0">
+	                {!showDeleted && filteredRecipesList.length > 0 && activeRecipe && !isEditMode && (
+	                  <button
+	                    onClick={handleEnterEditMode}
+	                    className="flex items-center gap-1 px-2 py-1.5 bg-app-accent text-app-bg hover:scale-105 active:scale-95 rounded-lg text-[9px] font-black uppercase transition-all shadow-lg shadow-app-accent/20"
+	                  >
+	                    <Pencil size={11} /> Edit Recipe
+	                  </button>
+	                )}
+	                {isEditMode && (
+                    <>
+	                    <button
+	                      type="button"
+	                      onClick={handleUndoDeleteIngredient}
+	                      disabled={!lastDeletedIngredient || lastDeletedIngredient.recipeId !== activeRecipe.id}
+	                      className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-[9px] font-black uppercase transition-all border ${lastDeletedIngredient && lastDeletedIngredient.recipeId === activeRecipe.id ? 'bg-app-bg text-app-accent border-app-accent/30 hover:border-app-accent' : 'bg-app-bg/60 text-app-muted border-app-border opacity-50 cursor-not-allowed'}`}
+	                    >
+	                      <Undo2 size={11} /> Undo
+	                    </button>
+	                    <button
+	                      type="button"
+	                      onClick={() => {
+                          setEditingIngId(null);
+                          setLastDeletedIngredient(null);
+                          setIsEditMode(false);
+                        }}
+	                      className="flex items-center gap-1 px-2 py-1.5 bg-app-bg text-app-muted hover:text-app-text border border-app-border rounded-lg text-[9px] font-black uppercase transition-all"
+	                    >
+	                      <Undo2 size={11} /> Exit
+	                    </button>
+	                    <button
+                        type="button"
+	                      onClick={async () => {
+	                        await handleUpdateRecipe();
+                          setLastDeletedIngredient(null);
+                          setIsEditMode(false);
+                        }}
+	                      className="flex items-center gap-1 px-2 py-1.5 bg-app-accent text-app-bg hover:brightness-110 rounded-lg text-[9px] font-black uppercase transition-all shadow-lg shadow-app-accent/20 border border-app-accent"
+	                    >
+	                      <Save size={11} /> SAVE TEMPLATE
+	                    </button>
+                    </>
+	                )}
+	                <button
+	                  onClick={() => setShowDeleted(!showDeleted)}
+	                  className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[9px] font-black uppercase transition-all border ${showDeleted ? 'bg-red-500 text-white border-red-600 shadow-lg shadow-red-500/20' : 'bg-app-bg text-app-muted border-app-border hover:border-app-muted'}`}
+	                >
+	                  {showDeleted ? <Undo2 size={11} /> : <Trash2 size={11} />}
+	                  {showDeleted ? "Back to Library" : "Restore Bin"}
+	                </button>
+	              </div>
             </div>
 
             {/* HIGH-DENSITY HEADER: Inline Title & Scale */}
-            {filteredRecipesList.length > 0 ? (
-              <div className="space-y-4">
-                <div className="bg-app-surface border border-app-border rounded-lg overflow-hidden grid grid-cols-1 md:grid-cols-[1fr_auto] divide-x divide-app-border relative shadow-sm">
+            {filteredRecipesList.length > 0 && activeRecipe ? (
+              <div className="w-full min-w-0 space-y-3">
+		                <div className="w-full min-w-0 bg-app-surface border border-app-border rounded-lg overflow-visible grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_auto] divide-x divide-app-border relative shadow-sm z-20">
 
 
                   {/* SELECTOR & STRATEGY MINI */}
-                  <div className="p-4 flex items-center gap-4 min-w-0">
-                    <div className="bg-app-accent/10 p-3 rounded-xl text-app-accent shrink-0 border border-app-accent/20">
-                      <ChefHat size={24} />
-                    </div>
-                    <div className="relative flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-4 mb-1">
-                        <div className="relative flex-1">
-                          {isEditMode ? (
-                            <input
-                              className="w-full bg-app-bg border border-app-accent/20 font-black text-2xl text-app-text outline-none px-2 py-1 rounded-lg focus:border-app-accent"
-                              value={activeRecipe.name}
+		                  <div className="p-2.5 flex items-start gap-2 min-w-0">
+		                    <div className="bg-app-accent/10 p-1.5 rounded-xl text-app-accent shrink-0 border border-app-accent/20">
+		                      <ChefHat size={18} />
+		                    </div>
+			                    <div className="relative flex-1 min-w-0 z-30">
+		                      <div className="flex items-start justify-between gap-3 mb-1">
+			                        <div className="relative flex-1">
+		                          {isEditMode ? (
+		                            <input
+	                              className="w-full bg-app-bg border border-app-accent/20 font-black text-lg text-app-text outline-none px-2 py-1 rounded-lg focus:border-app-accent"
+	                              value={activeRecipe.name}
                               onChange={(e) => updateActiveRecipeLocal({ name: e.target.value })}
-                              placeholder="Recipe Name"
-                            />
-                          ) : (
-                            <>
-                              <select
-                                value={selectedId}
-                                onChange={(e) => { setSelectedId(e.target.value); setCheckedItems({}); }}
-                                className="w-full appearance-none bg-transparent font-black text-2xl text-app-text outline-none cursor-pointer pr-8 hover:text-app-accent transition-colors py-1"
-                              >
-                                {groupedRecipes.map(([groupLabel, items]) => (
-                                  <optgroup key={groupLabel} label={groupLabel} className="bg-app-surface text-app-muted text-[10px] uppercase font-black">
-                                    {items.map(r => {
-                                      const cleanName = translateIngredient(r.name).replace(/^\d+[\s.\-_]*/, '');
-                                      return (
-                                        <option key={r.id} value={r.id} className="text-app-text text-base font-bold">
-                                          {cleanName}
-                                        </option>
-                                      );
-                                    })}
-                                  </optgroup>
-                                ))}
-                              </select>
-                              <ChevronDown className="absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none opacity-40 text-app-text" size={20} />
-                            </>
-                          )}
-                        </div>
+		                              placeholder="Recipe Name"
+		                            />
+		                          ) : (
+			                            <div className="relative z-40">
+			                              <button
+			                                onClick={() => setIsRecipeMenuOpen(prev => !prev)}
+			                                className="w-full text-left flex items-center gap-2 hover:text-app-accent transition-colors pr-6 min-w-0"
+			                              >
+			                                <span className="font-black text-[18px] md:text-[20px] text-app-text leading-tight truncate whitespace-nowrap min-w-0">
+			                                  {translateIngredient(activeRecipe.name).replace(/^\d+[\s.\-_]*/, '')}
+			                                </span>
+			                                <ChevronDown className={`shrink-0 opacity-50 transition-transform ${isRecipeMenuOpen ? 'rotate-180' : ''}`} size={16} />
+			                              </button>
+		                              {isRecipeMenuOpen && (
+			                                <div
+			                                  className="absolute left-0 top-full mt-2 w-full max-h-72 overflow-auto overscroll-contain no-scrollbar bg-app-surface border border-app-border rounded-xl shadow-2xl z-[100] p-2"
+			                                  onWheel={(e) => e.stopPropagation()}
+			                                  onTouchMove={(e) => e.stopPropagation()}
+			                                >
+		                                  {groupedRecipes.map(([groupLabel, items]) => (
+		                                    <div key={groupLabel} className="mb-2 last:mb-0">
+		                                      <div className="px-2 py-1 text-[10px] font-black uppercase tracking-widest text-app-muted">
+		                                        {groupLabel}
+		                                      </div>
+		                                      <div className="space-y-1">
+		                                        {items.map(r => {
+		                                          const cleanName = translateIngredient(r.name).replace(/^\d+[\s.\-_]*/, '');
+		                                          return (
+		                                            <button
+		                                              key={r.id}
+		                                              onClick={() => {
+		                                                setSelectedId(r.id);
+		                                                setCheckedItems({});
+		                                                setIsRecipeMenuOpen(false);
+		                                              }}
+		                                              className={`w-full text-left px-2 py-2 rounded-lg text-sm font-bold transition-colors ${r.id === selectedId ? 'bg-app-accent text-app-bg' : 'text-app-text hover:bg-app-bg'}`}
+		                                            >
+		                                              {cleanName}
+		                                            </button>
+		                                          );
+		                                        })}
+		                                      </div>
+		                                    </div>
+		                                  ))}
+		                                </div>
+		                              )}
+		                            </div>
+		                          )}
+		                        </div>
 
-                        {/* ACTIONS MOVED HERE */}
-                        <div className="flex items-center gap-2 shrink-0">
-                          {!showDeleted ? (
-                            <>
-                              <button
-                                onClick={() => handleSoftDelete(activeRecipe.id)}
-                                className="flex items-center gap-2 px-3 py-2 bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white border border-red-500/20 rounded-lg text-xs font-black uppercase transition-all"
-                              >
-                                <Trash2 size={14} />
-                              </button>
-                            </>
-                          ) : (
-                            <button
-                              onClick={() => handleRestore(activeRecipe.id)}
-                              className="flex items-center gap-2 px-4 py-2 bg-green-500 text-white hover:brightness-110 rounded-lg text-xs font-black uppercase transition-all shadow-lg shadow-green-500/20"
-                            >
-                              <Undo2 size={14} /> Restore Recipe
-                            </button>
-                          )}
-                        </div>
-                      </div>
+	                        {/* ACTIONS MOVED HERE */}
+		                        <div className="flex items-center gap-1 shrink-0">
+		                          {showDeleted ? (
+		                            <button
+		                              onClick={() => handleRestore(activeRecipe.id)}
+		                              className="flex items-center gap-1 px-2.5 py-1.5 bg-green-500 text-white hover:brightness-110 rounded-lg text-[8px] font-black uppercase transition-all shadow-lg shadow-green-500/20"
+		                            >
+		                              <Undo2 size={11} /> Restore Recipe
+		                            </button>
+		                          ) : (
+		                            <button
+		                              onClick={() => handleSoftDelete(activeRecipe.id)}
+		                              className="flex items-center gap-1 px-1.5 py-1.5 bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white border border-red-500/20 rounded-lg text-[8px] font-black uppercase transition-all"
+		                            >
+		                              <Trash2 size={11} />
+		                            </button>
+		                          )}
+		                        </div>
+	                      </div>
 
-                      <div className="flex items-center gap-3">
-                        <div className="flex items-center gap-1.5 bg-app-bg px-2 py-0.5 rounded border border-app-border">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <div className="flex items-center gap-1 bg-app-bg px-1.5 py-0.5 rounded border border-app-border">
                           <input
                             type="checkbox"
                             id="show-on-board-top"
@@ -1014,36 +1450,91 @@ const SopMain = () => {
                             onChange={(e) => updateActiveRecipeLocal({ show_on_board: e.target.checked })}
                             className="accent-app-accent"
                           />
-                          <label htmlFor="show-on-board-top" className="text-[9px] font-black uppercase text-app-muted cursor-pointer">Live on Board</label>
+                          <label htmlFor="show-on-board-top" className="text-[8px] font-black uppercase text-app-muted cursor-pointer">Live on Board</label>
                         </div>
-                        <span className="text-[10px] font-black text-app-muted uppercase tracking-widest bg-app-bg/50 px-2 py-0.5 rounded">{activeRecipe.tier}</span>
-                        <span className="text-[10px] font-black text-app-accent uppercase tracking-widest">{activeRecipe.dishStyle || 'Production'}</span>
+                        <span className="text-[8px] font-black text-app-muted uppercase tracking-widest bg-app-bg/50 px-1.5 py-0.5 rounded">{activeRecipe.tier}</span>
+                        {isEditMode ? (
+                          <select
+                            className="text-[10px] font-black text-app-accent uppercase tracking-widest bg-app-bg border border-app-border rounded px-2 py-0.5 outline-none"
+                            value={activeRecipe.dishStyle || 'production'}
+                            onChange={(e) => {
+                              const nextStyle = e.target.value;
+                              const syncedPortionClass = DISH_STYLE_TO_PORTION_CLASS[nextStyle];
+                              updateActiveRecipeLocal({
+                                dishStyle: nextStyle,
+                                ...(syncedPortionClass ? { portion_class: syncedPortionClass } : {})
+                              });
+                            }}
+                          >
+                            <option value="main">Main</option>
+                            <option value="carb">Carb</option>
+                            <option value="main_carb">Main + Carb</option>
+                            <option value="side">Side</option>
+                            <option value="starter">Starter</option>
+                            <option value="stew">Stew</option>
+                            <option value="curry">Curry</option>
+                            <option value="soup">Soup</option>
+                            <option value="marinade">Marinade</option>
+                            <option value="sauce">Sauce</option>
+                            <option value="base">Base</option>
+                            <option value="prep">Prep</option>
+                            <option value="component">Component</option>
+                          </select>
+                        ) : (
+                          <span className="text-[9px] font-black text-app-accent uppercase tracking-widest">{activeRecipe.dishStyle || 'Production'}</span>
+                        )}
+                        
+                        {/* YIELD CONTRACT METADATA HIDDEN (V3.1) */}
 
-                        <div className="flex items-center gap-1.5 bg-app-bg px-2 py-0.5 rounded border border-app-border">
+
+                        <div className="flex items-center gap-1 bg-app-bg px-1.5 py-0.5 rounded border border-app-border min-w-0">
                           <Globe size={10} className="text-blue-400" />
                           {isEditMode ? (
                             <input
-                              className="bg-transparent border-none outline-none text-[10px] font-black text-blue-400 uppercase tracking-widest w-24 focus:ring-0"
+                              className="bg-transparent border-none outline-none text-[10px] font-black text-blue-400 uppercase tracking-widest w-24 sm:w-28 focus:ring-0 min-w-0"
                               value={activeRecipe.cuisine || ''}
                               onChange={(e) => updateActiveRecipeLocal({ cuisine: e.target.value })}
                               placeholder="ADD CUISINE"
                             />
                           ) : (
-                            <span className="text-[10px] font-black text-blue-400 uppercase tracking-widest">
+                            <span className="text-[9px] font-black text-blue-400 uppercase tracking-widest">
                               {activeRecipe.cuisine || 'No Cuisine'}
                             </span>
                           )}
                         </div>
 
                         {isEditMode && (
-                          <div className="flex items-center gap-1.5 bg-app-bg px-2 py-0.5 rounded border border-amber-400/30">
+                          <div className="flex items-center gap-1.5 bg-app-bg px-2 py-0.5 rounded border border-amber-400/30 min-w-0">
                             <Tag size={10} className="text-amber-400" />
                             <input
-                              className="bg-transparent border-none outline-none text-[10px] font-black text-amber-400 uppercase tracking-widest w-24 focus:ring-0"
+                              className="bg-transparent border-none outline-none text-[10px] font-black text-amber-400 uppercase tracking-widest w-28 sm:w-32 focus:ring-0 min-w-0"
                               value={activeRecipe.occasion || ''}
                               onChange={(e) => updateActiveRecipeLocal({ occasion: e.target.value })}
                               placeholder="ADD OCCASION"
                             />
+                          </div>
+                        )}
+                        {isEditMode && (
+                          <div className="flex items-center gap-1.5 bg-app-bg px-2 py-0.5 rounded border border-app-accent/30 min-w-0">
+                            <Scale size={10} className="text-app-accent shrink-0" />
+                            <select
+                              className="bg-transparent border-none outline-none text-[10px] font-black text-app-accent uppercase tracking-widest w-28 sm:w-32 focus:ring-0 min-w-0"
+                              value={activeRecipe.portion_class || ''}
+                              onChange={(e) => updateActiveRecipeLocal({ portion_class: e.target.value })}
+                            >
+                              <option value="">NO CLASS</option>
+                              <option value="stew">STEW</option>
+                              <option value="meat_stir_fry">MEAT STIR FRY</option>
+                              <option value="veg_stir_fry">VEG STIR FRY</option>
+                              <option value="curry">CURRY</option>
+                              <option value="carb">CARB</option>
+                              <option value="main_carb">MAIN + CARB</option>
+                              <option value="side">SIDE</option>
+                              <option value="salad">SALAD</option>
+                              <option value="prep">PREP</option>
+                              <option value="sauce">SAUCE</option>
+                              <option value="component">COMPONENT</option>
+                            </select>
                           </div>
                         )}
                       </div>
@@ -1053,179 +1544,218 @@ const SopMain = () => {
                   {/* ACTION BUTTONS REMOVED FROM SIDE BAR */}
 
                   {/* COMPACT SCALING BOX */}
-                  <div className="flex items-center gap-6 px-6 bg-app-surface/50 print:hidden">
-                    <div className="text-center">
-                      <label className="block text-[8px] font-black uppercase text-app-muted mb-1 tracking-tighter">
-                        {portionMode ? "Target Portions" : "Target Batches"}
-                      </label>
-                      <div className="flex items-center gap-2">
+	                  <div className="w-full min-w-0 grid grid-cols-1 2xl:grid-cols-[138px_minmax(0,1fr)_206px] xl:grid-cols-[126px_minmax(0,1fr)_188px] items-stretch gap-2 px-2.5 py-2.5 bg-app-surface/50 print:hidden">
+	                    <div className="text-center min-w-0 shrink-0 bg-app-bg/55 border border-app-border rounded-xl px-2 py-2 flex min-h-[84px] flex-col justify-center">
+	                      <label className="block text-[8px] font-black uppercase text-app-muted mb-1 tracking-tighter">
+	                        {portionMode ? "Target Portions" : "Target Batches"}
+	                      </label>
+	                      <div className="flex items-center justify-center gap-1.5 min-h-[36px]">
                         <input
                           type="number"
-                          step={portionMode ? "1" : "0.1"}
+                          step={portionMode ? "1" : "0.5"}
                           min="0"
                           value={
                             planIntent[selectedId]?.mode === (portionMode ? 'portion' : 'batch')
                               ? planIntent[selectedId].val
                               : (portionMode
-                                ? currentPortionCount
-                                : Number((currentYieldValue / standardBatchYield).toFixed(2)))
+                                ? displayCurrentPortionCount
+                                : 1.0)
                           }
-                          onChange={(e) => {
-                            const val = parseFloat(e.target.value) || 0;
-                            if (portionMode) {
-                              handleUpdateTarget(selectedId, val, 'portion');
+	                          onChange={(e) => {
+	                            const val = parseFloat(e.target.value) || 0;
+	                            if (portionMode) {
+	                              handleUpdateTarget(selectedId, val, 'portion');
                             } else {
-                              // In Production Mode, input is 'batches' — store directly as batch mode
-                              handleUpdateTarget(selectedId, val, 'batch');
-                            }
-                          }}
-                          className={`w-20 bg-app-bg border border-app-border rounded px-2 py-1 font-black text-2xl text-center outline-none focus:ring-1 ${portionMode ? 'text-amber-500 focus:ring-amber-500' : 'text-app-accent focus:ring-app-accent'}`}
-                        />
-                        <div className="text-left">
-                          <span className="block font-bold text-[10px] text-app-muted uppercase leading-none">
-                            {portionMode ? "PPL" : "BATCHES"}
+                              // Batch targeting stores directly as batch mode
+	                              handleUpdateTarget(selectedId, val, 'batch');
+	                            }
+	                          }}
+	                          onBlur={() => handleCommitTarget(selectedId, portionMode ? 'portion' : 'batch')}
+	                          className={`w-16 bg-app-bg border border-app-border rounded px-2 py-1 font-black text-lg text-center tabular-nums outline-none focus:ring-1 ${portionMode ? 'text-amber-500 focus:ring-amber-500' : 'text-app-accent focus:ring-app-accent'}`}
+	                        />
+                        <div className="w-[66px] text-left">
+                          <span className="block font-bold text-[9px] text-app-muted uppercase leading-none">
+                            {portionMode ? "PORTIONS" : "BATCHES"}
                           </span>
-                          {!portionMode && (
-                            <span className="text-[10px] font-black text-app-accent">
-                              {formatDisplay(currentYieldValue, activeRecipe.unit).v} {formatDisplay(currentYieldValue, activeRecipe.unit).u}
-                            </span>
+                          <span className="block min-h-[12px] text-[9px] font-black text-app-accent">
+                            {portionMode ? '\u00A0' : '\u00A0'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Kitchen Intelligence Display (Simplified V3.1) */}
+	                    <div className="flex min-w-0 flex-col justify-center border border-app-border rounded-xl bg-app-bg/35 px-2.5 py-2 min-h-[84px]">
+	                      <div className="flex items-start gap-2">
+	                        <Scale size={12} className="text-app-accent opacity-50" />
+	                        <div className="min-w-0 flex-1">
+                          <div className="min-h-[12px]">
+                          {isScaled ? (
+                            <div className="flex items-baseline gap-1 opacity-40 leading-none">
+                              <span className="text-[8px] text-app-muted font-bold line-through">
+                                {formatDisplay(getRecipeBaselineGrams(activeRecipe, false, coreSettings), 'g').v}g
+                              </span>
+                              <span className="text-[7px] text-app-muted font-black">BASE</span>
+                            </div>
+                          ) : (
+                            <div className="invisible flex items-baseline gap-1 leading-none">
+                              <span className="text-[9px] font-bold">0g</span>
+                              <span className="text-[7px] font-black">BASE</span>
+                            </div>
                           )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Kitchen Intelligence Display */}
-                    <div className="flex flex-col justify-center border-l border-app-border pl-6">
-                      <div className="flex items-center gap-2">
-                        <Scale size={12} className="text-app-accent opacity-50" />
-                        <div className="text-[14px] font-black text-app-text uppercase">
-                          TOTAL WEIGHT: {totalWeightForActive.v} <span className="text-app-accent">{totalWeightForActive.u}</span>
-                          <span className="block text-[10px] text-app-accent mt-0.5">
-                            {['base', 'stock', 'prep'].includes((activeRecipe.dishStyle || '').toLowerCase())
-                              ? `Batch Size: ${formatDisplay(currentYieldValue, activeRecipe.unit).v} ${formatDisplay(currentYieldValue, activeRecipe.unit).u}`
-                              : `Target Yield: ${currentPortionCount} portions`}
+                          </div>
+                          <div className="flex items-baseline gap-1 text-[12px] font-black uppercase text-app-text min-h-[16px] whitespace-nowrap">
+                            <span className="shrink-0">TOTAL WEIGHT:</span>
+                            <span className="tabular-nums">{totalEdibleWeightFormatted.v}</span>
+                            <span className="text-app-accent">{totalEdibleWeightFormatted.u}</span>
+                          </div>
+	                          <span className="block text-[8px] text-app-accent mt-0.5 min-h-[18px]">
+	                            {isComponentRecipe
+	                              ? `${hasIntent ? 'Target' : 'Original'} Yield: ${totalEdibleWeightFormatted.v}${totalEdibleWeightFormatted.u}`
+	                              : (portionMode
+	                                ? `${hasIntent ? 'Target' : 'Original'} Yield: ${hasIntent ? displayTargetPortions : displayCurrentPortionCount} portions`
+	                                : `${hasIntent ? 'Target' : 'Default'} Yield: ${productionTotalPortions} portions`)}
+	                          </span>
+                          <span className={`block text-[8px] mt-0.5 min-h-[12px] ${selectedEstimatedUseGrams > 0.01 ? 'text-blue-300' : 'invisible'}`}>
+                            {selectedEstimatedUseGrams > 0.01 ? (
+                              <>
+                              ESTIMATED USE: {formatDisplay(selectedEstimatedUseGrams, 'g').v} {formatDisplay(selectedEstimatedUseGrams, 'g').u}
+                              </>
+                            ) : (
+                              <>&nbsp;</>
+                            )}
+                          </span>
+                          <span className={`mt-0.5 inline-flex min-h-[12px] items-center gap-1 text-[8px] ${selectedShortageGrams > 0.01 ? 'text-amber-400' : 'invisible'}`}>
+                            {selectedShortageGrams > 0.01 ? (
+                              <>
+                              <AlertTriangle size={10} className="shrink-0" />
+                              NEED MORE: {formatDisplay(selectedShortageGrams, 'g').v} {formatDisplay(selectedShortageGrams, 'g').u}
+                              </>
+                            ) : (
+                              <>
+                              <AlertTriangle size={10} className="shrink-0" />
+                              &nbsp;
+                              </>
+                            )}
                           </span>
                         </div>
                       </div>
-                      <div className="text-[9px] font-bold text-app-muted uppercase tracking-tight leading-tight">
-                        Standard Batch Size: <span className="text-white">{formatDisplay(standardBatchYield, activeRecipe.unit).v} {formatDisplay(standardBatchYield, activeRecipe.unit).u}</span>
-                        <span className="text-app-accent ml-1 block mt-0.5">
-                          {['prep', 'base', 'stock'].includes((activeRecipe.dishStyle || activeRecipe.style || '').toLowerCase())
-                            ? '(Base Yield for ' + portionsPerBatch + ' portions)'
-                            : `(${portionsPerBatch} portions @ ${formatDisplay(getPortionWeight(activeRecipe), 'g').v}${formatDisplay(getPortionWeight(activeRecipe), 'g').u}/per portion)`}
-                        </span>
-                      </div>
                     </div>
 
-                    <div className="flex flex-col gap-1 ml-auto">
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => {
-                            const reset = {};
-                            recipes.forEach(r => reset[r.id] = { val: r.baseYield || 1, mode: 'weight' });
-                            setPlanIntent(reset);
-                          }}
-                          className={`${Math.abs(currentYieldValue - (activeRecipe?.baseYield || 1)) > 0.01 ? 'bg-amber-500 shadow-amber-500/20' : 'bg-app-accent shadow-app-accent/20'} text-app-bg hover:scale-105 active:scale-95 shadow-lg text-[10px] font-black uppercase px-4 py-2 rounded-xl transition-all flex items-center gap-2`}
-                        >
-                          <RotateCcw size={14} /> DEFAULT ALL
-                        </button>
-                        {Math.abs(currentYieldValue - (activeRecipe?.baseYield || 1)) <= 0.01 && !isEditMode && (
-                          <button
-                            onClick={() => setIsEditMode(true)}
-                            className="bg-app-accent text-app-bg hover:scale-105 active:scale-95 shadow-lg shadow-app-accent/20 text-[10px] font-black uppercase px-4 py-2 rounded-xl transition-all flex items-center gap-2"
-                          >
-                            <Pencil size={14} /> EDIT RECIPE
-                          </button>
-                        )}
+		                    <div className="grid shrink-0 min-w-0 self-center grid-cols-3 gap-1 w-full xl:w-[188px] 2xl:w-[206px]">
+		                      <button
+		                        onClick={handleDefaultSelected}
+			                        className="bg-app-bg border border-app-border text-app-text hover:border-app-accent hover:text-app-accent shadow-lg shadow-app-border/10 text-[6px] font-black uppercase px-1 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1 min-h-[30px] w-full"
+			                      >
+			                        <RotateCcw size={10} /> DEFAULT
+			                      </button>
 
-                        <button
-                          onClick={() => {
-                            const activeIntent = planIntent[activeRecipe?.id];
-                            let activeVal = activeIntent ? activeIntent.val : 1;
-                            let mode = activeIntent ? activeIntent.mode : (portionMode ? 'portion' : 'batch');
+		                      <button
+		                        onClick={handleDefaultAll}
+			                        className={`${Math.abs((planIntent[activeRecipe?.id]?.val ?? activeDefaultIntent.val) - activeDefaultIntent.val) > 0.01 ? 'bg-amber-500 shadow-amber-500/20' : 'bg-app-accent shadow-app-accent/20'} text-app-bg shadow-lg text-[6px] font-black uppercase px-1 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1 min-h-[30px] w-full`}
+			                      >
+			                        <RotateCcw size={10} /> DEFAULT ALL
+			                      </button>
+
+		                      <button
+	                          onClick={() => {
+	                            const activeIntent = planIntent[activeRecipe?.id];
+	                            let activeVal = activeIntent ? activeIntent.val : 1;
+	                            let mode = activeIntent ? activeIntent.mode : (portionMode ? 'portion' : 'batch');
 
                             console.log(`Global Action: Apply All [val:${activeVal}, mode:${mode}] to ${recipes.length} recipes`);
 
                             const allScaled = { ...planIntent };
                             recipes.forEach(r => {
                               allScaled[r.id] = { val: activeVal, mode };
-                            });
-                            setPlanIntent(allScaled);
-                          }}
-                          className="bg-app-accent/10 border border-app-accent/20 hover:bg-app-accent hover:text-app-bg text-[8px] font-black uppercase px-2 py-1 rounded transition-all text-app-accent"
-                        >
-                          Apply All
-                        </button>
-                      </div>
-                      <button onClick={handleRoundAndFix} className="bg-app-success text-white hover:bg-green-700 px-3 py-1 rounded font-black uppercase text-[9px] flex items-center justify-center gap-1.5 transition-all shadow-lg shadow-app-success/10">
-                        <Zap size={10} /> Fix
-                      </button>
-                    </div>
+	                            });
+	                            setPlanIntent(allScaled);
+	                          }}
+			                          className="bg-app-accent/10 border border-app-accent/20 hover:bg-app-accent hover:text-app-bg shadow-lg shadow-app-accent/10 text-[6px] font-black uppercase px-1 py-1.5 rounded-lg transition-colors text-app-accent flex items-center justify-center gap-1 min-h-[30px] w-full"
+			                        >
+			                          <Copy size={10} /> APPLY ALL
+			                        </button>
+	                    </div>
                   </div>
                 </div>
 
                 {/* INTEGRATED INGREDIENT BOX (Wrapped Grid, No Scroll) */}
-                <div className="bg-app-surface border border-app-border rounded-lg overflow-hidden">
+                <div className="w-full min-w-0 bg-app-surface border border-app-border rounded-lg overflow-hidden">
                   <div className="bg-app-bg px-4 py-2.5 border-b border-app-border flex justify-between items-center">
                     <h4 className="font-black uppercase text-[10px] tracking-widest flex items-center gap-2 text-app-muted">
                       <Scale size={14} className="text-app-accent" />
                       Production Scaling
-                      <span className="font-normal lowercase ml-1">(x{((currentYieldValue / (activeRecipe.baseYield || 1)) || 0).toFixed(1)} batches)</span>
+                      {hasIntent && Math.abs((currentYieldValue / (activeRecipe?.baseYield || 1)) - 1) > 0.001 && (
+                        <span className="font-normal lowercase ml-1">
+                          (x{((activeNodeData?.weight || 0) / (coreGetCanonicalBatchYield(activeRecipe) || 1)).toFixed(2)} scale)
+                        </span>
+                      )}
                     </h4>
                     <div className="flex gap-6 text-[10px] font-black uppercase text-app-muted tracking-widest">
+                      {isEditMode && (
+                        <div className="flex items-center gap-2">
+                          <select
+                            className="rounded-md border border-app-accent/25 bg-app-bg px-2 py-1 text-[9px] font-black uppercase tracking-widest text-app-accent outline-none focus:ring-1 focus:ring-app-accent"
+                            value={pendingIngredientCategory}
+                            onChange={(e) => setPendingIngredientCategory(e.target.value)}
+                          >
+                            {EDIT_CATEGORY_ORDER.map((category) => (
+                              <option key={category} value={category}>
+                                {category}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => handleAddIngredient(pendingIngredientCategory)}
+                            className="h-7 rounded-md border border-app-accent/25 bg-app-accent/10 px-2 text-[9px] font-black uppercase tracking-widest text-app-accent transition-all hover:bg-app-accent hover:text-app-bg"
+                          >
+                            + Add
+                          </button>
+                        </div>
+                      )}
                       <span className="flex items-center gap-1.5"><Package size={12} className="text-app-accent" /> P: {activeRecipe.prepTime || 'N/A'}</span>
                       <span className="flex items-center gap-1.5"><Zap size={12} className="text-app-accent" /> C: {activeRecipe.cookTime || 'N/A'}</span>
                     </div>
                   </div>
 
                   {/* WRAPPED GRID CONTAINER */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 p-4 gap-6">
-                    {Object.entries(
-                      activeRecipe.ingredients.reduce((acc, ing) => {
-                        let cat = (ing.category || ing.cat || 'other').toUpperCase();
-                        // PAIRING LOGIC: Combine Wet & Liquid for physical prep container sharing
-                        if (cat === 'WET' || cat === 'LIQUID') cat = 'WET / LIQUID';
-
-                        if (!acc[cat]) acc[cat] = [];
-                        acc[cat].push(ing);
-                        return acc;
-                      }, {})
-                    ).sort((a, b) => {
-                      // Put Wet/Liquid first as they are the most common mixables
-                      if (a[0] === 'WET / LIQUID') return -1;
-                      if (b[0] === 'WET / LIQUID') return 1;
-                      return a[0].localeCompare(b[0]);
-                    }).map(([category, items]) => (
-                      <div key={category} className="space-y-2">
-                        <h5 className={`text-[10px] font-black uppercase px-2 py-1 rounded inline-block tracking-tighter mb-1 border ${category === 'WET / LIQUID' ? 'bg-app-accent/20 border-app-accent text-app-text font-black scale-105 transform origin-left' : 'bg-app-accent/5 border-app-accent/10 text-app-accent'}`}>
-                          {category}
-                          {category === 'WET / LIQUID' && <span className="ml-2 text-[8px] font-normal opacity-70">(Mix in same container)</span>}
-                        </h5>
-                        <div className="space-y-1">
+                  <div className={`grid grid-cols-1 p-4 ${isEditMode ? 'md:grid-cols-2 xl:grid-cols-3 gap-4' : 'md:grid-cols-2 lg:grid-cols-4 gap-6'}`}>
+                    {ingredientCategoryEntries.map(([category, items]) => (
+                      <div key={category} className={`${isEditMode ? 'space-y-1.5' : 'space-y-2'}`}>
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <h5 className={`text-[10px] font-black uppercase px-2 py-1 rounded inline-block tracking-tighter border ${category === 'WET / LIQUID' ? 'bg-app-accent/20 border-app-accent text-app-text font-black scale-105 transform origin-left' : 'bg-app-accent/5 border-app-accent/10 text-app-accent'}`}>
+                            {category}
+                            {category === 'WET / LIQUID' && <span className="ml-2 text-[8px] font-normal opacity-70">(Mix in same container)</span>}
+                          </h5>
+                          {isEditMode && (
+                            <button
+                              type="button"
+                              onClick={() => handleAddIngredient(category)}
+                              className="w-6 h-6 rounded-md border border-app-accent/25 bg-app-accent/10 text-app-accent hover:bg-app-accent hover:text-app-bg transition-all flex items-center justify-center text-sm font-black"
+                              title={`Add ingredient to ${category}`}
+                            >
+                              +
+                            </button>
+                          )}
+                        </div>
+                        <div className={isEditMode ? 'space-y-0.5' : 'space-y-1'}>
                           {items.map((ing) => {
-                            const idx = activeRecipe.ingredients.indexOf(ing);
-                            const factor = currentYieldValue / activeRecipe.baseYield;
+                            const idx = (activeRecipe?.ingredients || []).indexOf(ing);
                             const isChecked = checkedItems[idx];
 
-                            // SPECIAL SCALING LOGIC: Kimchi Cabbage vs Paste Ratio
-                            // If Kimchi (prep/side), ensure paste follows cabbage usage
-                            let scaledVal = ing.qty * factor;
-                            if (activeRecipe.id === 'kimchi' && ing.name.toLowerCase().includes('cabbage')) {
-                              // Cabbage is the lead; paste should scale to it
-                              scaledVal = ing.qty * factor;
-                            } else if (activeRecipe.id === 'kimchi' && ing.category?.toLowerCase() === 'paste') {
-                              // Paste ratio calculation (approx 20% of cabbage weight)
-                              // In the seed, 12kg cabbage matches 2kg paste (2/12 = 16.6%)
-                              // We use intelligent scaling based on the base recipe ratio
-                              const cabbageIng = activeRecipe.ingredients.find(i => i.name.toLowerCase().includes('cabbage'));
-                              if (cabbageIng) {
-                                const baseRatio = ing.qty / cabbageIng.qty;
-                                const currentCabbageQty = cabbageIng.qty * factor;
-                                scaledVal = currentCabbageQty * baseRatio;
-                              }
-                            }
+                            // CIRCUIT BREAKER: Use rootScaleFactor for the primary recipe view (Step 2)
+                            const factor = portionMode ? (hasIntent ? rootScaleFactor : 1.0) : displayScaleFactor;
+                            const isRowScaled = hasIntent && Math.abs(factor - 1) > 0.01; // Slightly higher threshold for UI badge
 
-                            const isInteger = Math.abs(scaledVal - Math.round(scaledVal)) < 0.01;
+                            let scaledVal = ing.qty * factor;
+                            const isPortionLikeIngredient = /^(portion|portions|pcs|pax|each)s?$/i.test((ing.unit || '').trim());
+                            const portionDisplay = isPortionLikeIngredient
+                              ? formatPortionDisplay(scaledVal)
+                              : null;
+                            const linkedRecipeId = resolveRecipeId(ing, recipes);
+                            
+                            const isInteger = Math.abs((scaledVal || 0) - Math.round(scaledVal || 0)) < 0.01;
                             const isMain = ing.isMain;
                             const isEditing = editingIngId === idx;
 
@@ -1238,41 +1768,70 @@ const SopMain = () => {
                                 }}
                                 className={`flex items-center justify-between p-2 rounded border transition-all ${isMain ? 'border-l-4 border-l-app-accent ring-1 ring-app-accent/10' : ''} ${isChecked ? 'bg-app-success/5 border-app-success/20 opacity-40' : 'bg-app-bg border-app-border'} ${isMain && !isChecked ? 'hover:border-app-accent' : ''}`}
                               >
-                                <div className="flex items-center gap-2 min-w-0" onClick={(e) => {
-                                  if (isMain && !isChecked) {
-                                    e.stopPropagation();
-                                    setEditingIngId(idx);
-                                  } else {
-                                    setCheckedItems({ ...checkedItems, [idx]: !isChecked });
-                                  }
-                                }}>
-                                  <div className={`w-3 h-3 rounded flex items-center justify-center border ${isChecked ? 'bg-app-success border-app-success text-white' : 'border-app-border bg-app-surface'}`}>
-                                    {isChecked && <Check size={8} strokeWidth={4} />}
+                                <div className="flex items-center gap-3 min-w-0 flex-1">
+                                  <div className="shrink-0">
+                                    {isEditMode ? (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleDeleteIngredient(idx);
+                                        }}
+                                        className="w-7 h-7 rounded-md border border-red-500/25 bg-red-500/10 text-red-300 hover:bg-red-500/20 hover:border-red-500/40 transition-all flex items-center justify-center"
+                                        title="Delete ingredient"
+                                      >
+                                        <Trash2 size={12} />
+                                      </button>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setCheckedItems({ ...checkedItems, [idx]: !isChecked });
+                                        }}
+                                        className={`w-4 h-4 rounded flex items-center justify-center border transition-all ${isChecked ? 'bg-app-success border-app-success text-white' : 'border-app-border bg-app-surface'}`}
+                                        title={isChecked ? 'Mark ingredient active' : 'Mark ingredient done'}
+                                      >
+                                        {isChecked && <Check size={8} strokeWidth={4} />}
+                                      </button>
+                                    )}
                                   </div>
                                   <div className="min-w-0 flex-1">
                                     {isEditMode ? (
                                       <>
                                         <input
-                                          className={`w-full bg-app-bg border border-app-accent/20 outline-none text-[11px] font-bold leading-tight ${isChecked ? 'line-through text-app-muted' : 'text-app-text'} rounded px-1 transition-all focus:border-app-accent ${Math.abs(currentYieldValue - activeRecipe.baseYield) > 0.01 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                          className={`w-full bg-app-bg border border-app-accent/20 outline-none text-[11px] font-bold leading-tight ${isChecked ? 'line-through text-app-muted' : 'text-app-text'} rounded px-1 transition-all focus:border-app-accent`}
                                           value={translateIngredient(ing.name)}
                                           onChange={(e) => updateIngredientLocal(idx, { name: e.target.value })}
                                           onClick={(e) => e.stopPropagation()}
-                                          disabled={Math.abs(currentYieldValue - activeRecipe.baseYield) > 0.01}
-                                          title={Math.abs(currentYieldValue - activeRecipe.baseYield) > 0.01 ? 'Reset to Default (Original) to edit master template' : ''}
                                         />
                                         <input
-                                          className={`w-full bg-app-bg border border-app-accent/10 outline-none text-[8px] text-app-muted uppercase font-medium mt-1 rounded px-1 transition-all focus:border-app-accent ${Math.abs(currentYieldValue - activeRecipe.baseYield) > 0.01 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                          className={`w-full bg-app-bg border border-app-accent/10 outline-none text-[8px] text-app-muted uppercase font-medium mt-1 rounded px-1 transition-all focus:border-app-accent`}
                                           value={ing.sku || ''}
                                           onChange={(e) => updateIngredientLocal(idx, { sku: e.target.value })}
                                           onClick={(e) => e.stopPropagation()}
                                           placeholder="ADD SKU/NOTE"
-                                          disabled={Math.abs(currentYieldValue - activeRecipe.baseYield) > 0.01}
                                         />
+                                        <select
+                                          className={`w-full bg-app-bg border border-app-accent/10 outline-none text-[8px] text-app-muted uppercase font-medium mt-1 rounded px-1 py-0.5 transition-all focus:border-app-accent`}
+                                          value={linkedRecipeId || ''}
+                                          onChange={(e) => updateIngredientLink(idx, e.target.value)}
+                                          onClick={(e) => e.stopPropagation()}
+                                        >
+                                          <option value="">NO LINK</option>
+                                          {linkableRecipes.map(r => (
+                                            <option key={r.id} value={r.id}>
+                                              {r.name}
+                                            </option>
+                                          ))}
+                                        </select>
                                       </>
                                     ) : (
                                       <>
                                         <p className={`text-[11px] font-bold leading-tight ${isChecked ? 'line-through text-app-muted' : 'text-app-text'}`}>
-                                          {translateIngredient(ing.name)} {isMain && <span className="text-[7px] bg-app-accent/20 text-app-accent px-1 rounded ml-1">MAIN</span>}
+                                          {translateIngredient(ing.name)}
+                                          {isMain && <span className="text-[7px] bg-app-accent/20 text-app-accent px-1 rounded ml-1">MAIN</span>}
+                                          {linkedRecipeId && <span className="text-[7px] bg-blue-500/20 text-blue-300 px-1 rounded ml-1 inline-flex items-center gap-1"><Link2 size={8} /> LINKED</span>}
                                         </p>
                                         <p className="text-[8px] text-app-muted uppercase font-medium">{ing.sku}</p>
                                       </>
@@ -1281,27 +1840,52 @@ const SopMain = () => {
                                 </div>
                                 <div className="text-right shrink-0" onClick={(e) => e.stopPropagation()}>
                                   {isEditMode ? (
-                                    <div className="flex items-center justify-end gap-1">
+                                    <div className="flex items-center justify-end gap-2">
                                       <input
                                         type="number"
                                         step="0.01"
-                                        className={`w-16 bg-app-bg border border-app-accent/30 text-app-text font-black text-right px-1 py-0.5 rounded outline-none focus:border-app-accent transition-all ${Math.abs(currentYieldValue - activeRecipe.baseYield) > 0.01 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                        className="w-24 sm:w-28 bg-app-bg border border-app-accent/30 text-app-text font-black text-right px-2 py-1 rounded outline-none focus:border-app-accent transition-all tabular-nums"
                                         value={ing.qty !== undefined && ing.qty !== null ? ing.qty : ""}
                                         onChange={(e) => updateIngredientLocal(idx, { qty: parseFloat(e.target.value) || 0 })}
-                                        disabled={Math.abs(currentYieldValue - activeRecipe.baseYield) > 0.01}
                                         placeholder="0"
                                       />
+                                      <span className="min-w-[34px] text-left text-[10px] font-black uppercase tracking-tight text-app-muted">
+                                        {ing.unit || 'unit'}
+                                      </span>
+                                      {/* is_process toggle hidden in V3.1 */}
+
                                     </div>
                                   ) : (
-                                    <span
-                                      className={`text-[14px] font-black tabular-nums transition-all ${isChecked ? 'text-app-muted' : isInteger ? 'text-app-accent' : 'text-app-text'}`}
-                                    >
-                                      {formatDisplay(scaledVal, ing.unit).v}
-                                    </span>
+                                    <div className="flex flex-col items-end">
+                                      {isScaled ? (
+                                        <>
+                                          <div className="flex items-baseline gap-1 opacity-40">
+                                            <span className="text-[10px] text-app-muted font-bold line-through tabular-nums">
+                                              {ing.qty}
+                                            </span>
+                                            <span className="text-[7px] text-app-muted font-black uppercase tracking-tighter">BASE</span>
+                                          </div>
+                                          <div className="flex items-baseline gap-0.5">
+                                            <span className={`text-[15px] font-black tabular-nums ${isChecked ? 'text-app-muted' : 'text-app-accent'}`}>
+                                              {portionDisplay ? portionDisplay.v : formatDisplay(scaledVal, ing.unit).v}
+                                            </span>
+                                            <span className={`text-[9px] font-black uppercase ${isChecked ? 'text-app-muted' : 'text-app-accent'}`}>
+                                              {portionDisplay ? portionDisplay.u : formatDisplay(scaledVal, ing.unit).u}
+                                            </span>
+                                          </div>
+                                        </>
+                                      ) : (
+                                        <div className="flex items-baseline gap-0.5">
+                                          <span className={`text-[15px] font-black tabular-nums ${isChecked ? 'text-app-muted' : 'text-app-text'}`}>
+                                            {ing.qty}
+                                          </span>
+                                          <span className="text-[9px] font-bold text-app-muted uppercase">
+                                            {ing.unit}
+                                          </span>
+                                        </div>
+                                      )}
+                                    </div>
                                   )}
-                                  <span className="text-[8px] font-bold text-app-muted uppercase ml-1">
-                                    {isEditMode ? ing.unit : formatDisplay(scaledVal, ing.unit).u}
-                                  </span>
                                 </div>
                               </div>
                             );
@@ -1314,7 +1898,7 @@ const SopMain = () => {
 
                 {/* PREP STRATEGY: Directly under ingredients, heavily detailed */}
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-                  {activeRecipe.note && activeRecipe.note !== 'No operational notes provided.' && (
+                  {activeRecipe?.note && activeRecipe?.note !== 'No operational notes provided.' && (
                     <div className="md:col-span-12 bg-app-surface border border-app-border rounded-lg p-4 relative overflow-hidden">
                       <div className="flex gap-2 items-center mb-2 font-black text-[10px] uppercase text-app-accent tracking-widest border-b border-app-border/50 pb-2">
                         <Info size={14} /> Critical Prep Strategy & Detailed Intelligence
@@ -1336,14 +1920,16 @@ const SopMain = () => {
                         {isBulkMode ? "Bulk Production Protocol" : "Standard Production Run"}
                       </h4>
                     </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-3">
-                      {(isBulkMode && activeRecipe.bulkMethod ? activeRecipe.bulkMethod : activeRecipe.method).map((step, i) => (
-                        <div key={i} className="flex gap-3 text-[11px] font-medium leading-relaxed text-app-text">
-                          <span className="font-bold text-app-accent bg-app-accent/10 rounded-full shrink-0 w-5 h-5 flex items-center justify-center text-[10px]">{i + 1}</span>
-                          <span className="pt-0.5">{step}</span>
-                        </div>
-                      ))}
-                    </div>
+                    {activeRecipe?.method && Array.isArray(activeRecipe.method) && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-3">
+                        {(isBulkMode && Array.isArray(activeRecipe.bulkMethod) ? activeRecipe.bulkMethod : activeRecipe.method).map((step, i) => (
+                          <div key={i} className="flex gap-3 text-[11px] font-medium leading-relaxed text-app-text">
+                            <span className="font-bold text-app-accent bg-app-accent/10 rounded-full shrink-0 w-5 h-5 flex items-center justify-center text-[10px]">{i + 1}</span>
+                            <span className="pt-0.5">{step}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   {/* SCALING ADVICE */}
@@ -1406,16 +1992,23 @@ const SopMain = () => {
                 <div className="bg-app-bg px-6 py-5 border-b border-app-border">
                   <div className="flex justify-between items-center mb-4">
                     <h2 className="font-bold uppercase text-xs tracking-widest flex items-center gap-2 text-app-muted">
-                      <LayoutDashboard size={18} /> {portionMode ? "Tester Target List" : "Daily Production List"}
+                      <LayoutDashboard size={18} /> {portionMode ? "Portion Target List" : "Batch Target List"}
                     </h2>
-                    <button
-                      onClick={() => {
-                        setPlanIntent({});
-                      }}
-                      className="text-[10px] font-bold bg-app-danger/10 text-app-danger px-3 py-1.5 rounded uppercase flex items-center gap-2 hover:bg-app-danger/20 transition-colors border border-app-danger/20"
-                    >
-                      <Trash2 size={14} /> Clear
-                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setPlanIntent({})}
+                        className="text-[9px] font-black bg-app-surface text-app-danger px-3 py-2 rounded uppercase flex items-center gap-1.5 hover:bg-app-danger/10 transition-all border border-app-danger/20"
+                        title="Clear manual overrides only"
+                      >
+                        <RotateCcw size={12} /> Clear Edits
+                      </button>
+                      <button
+                        onClick={handleDefaultAll}
+                        className="text-[9px] font-black bg-app-danger text-white px-3 py-2 rounded uppercase flex items-center gap-1.5 hover:bg-app-danger/90 transition-all shadow-lg shadow-app-danger/20"
+                      >
+                        <Trash2 size={12} /> Default All
+                      </button>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-4 gap-2">
@@ -1434,9 +2027,9 @@ const SopMain = () => {
 
                 <div className="p-4 space-y-2 overflow-y-auto max-h-[700px] custom-scroll">
                   {recipes.map(recipe => (
-                    <div key={recipe.id} className="flex items-center gap-4 bg-app-bg rounded-md p-4 border border-app-border hover:border-app-muted transition-colors group">
-                      <div className="flex-1">
-                        <div className="text-sm font-bold text-app-text mb-1">
+                    <div key={recipe.id} className="flex items-center gap-4 bg-app-bg rounded-md p-4 border border-app-border hover:border-app-muted transition-colors group h-[72px] shrink-0">
+                      <div className="flex-1 overflow-hidden">
+                        <div className="text-sm font-bold text-app-text mb-1 truncate">
                           {translateIngredient(recipe.name).replace(/^\d+[\s.\-_]*/, '')}
                         </div>
                         <div className="text-[10px] font-bold text-app-muted uppercase tracking-wider">{recipe.tier}</div>
@@ -1444,49 +2037,37 @@ const SopMain = () => {
                       <div className="relative">
                         <input
                           type="number"
-                          step={portionMode ? "1" : "0.1"}
+                          step={portionMode ? "1" : "0.5"}
                           value={planIntent[recipe.id]?.val ?? ""}
                           placeholder={portionMode
-                            ? Math.round(activeNodes[recipe.id]?.portions || (recipe.baseYield / Math.max(0.001, getPortionWeight(recipe))))
-                            : (activeNodes[recipe.id]?.scale || 1.0).toFixed(1)
+                            ? roundKitchenPortions(activeNodes[recipe.id]?.portions || (
+                              getRecipePortionWeight(recipe)
+                                ? (getRecipeBaselineGrams(recipe, false, coreSettings) / Math.max(0.001, getRecipePortionWeight(recipe)))
+                                : 0
+                            ))
+                            : '1.0'
                           }
-                          onChange={(e) => {
-                            const val = parseFloat(e.target.value);
-                            if (!isNaN(val)) {
-                              handleUpdateTarget(recipe.id, val, portionMode ? 'portion' : 'batch');
+	                          onChange={(e) => {
+	                            const val = parseFloat(e.target.value);
+	                            if (!isNaN(val)) {
+	                              handleUpdateTarget(recipe.id, val, portionMode ? 'portion' : 'batch');
                             } else if (e.target.value === '') {
                               const next = { ...planIntent };
-                              delete next[recipe.id];
-                              setPlanIntent(next);
-                            }
-                          }}
-                          className={`w-24 bg-app-surface border border-app-border rounded px-3 py-1.5 font-bold text-right text-lg outline-none focus:ring-1 ${portionMode ? 'text-amber-500 focus:border-amber-500 focus:ring-amber-500' : 'text-app-accent focus:border-app-accent focus:ring-app-accent'} placeholder:text-app-muted/30`}
-                        />
-                        <div className="absolute -top-2.5 -right-2 bg-app-surface text-app-muted text-[9px] font-bold px-1.5 py-0.5 border border-app-border rounded uppercase">
-                          {portionMode ? "ppl" : "batches"}
+	                              delete next[recipe.id];
+	                              setPlanIntent(next);
+	                            }
+	                          }}
+	                          onBlur={() => handleCommitTarget(recipe.id, portionMode ? 'portion' : 'batch')}
+	                          className={`w-24 bg-app-surface border border-app-border rounded px-3 py-1.5 font-bold text-right text-lg tabular-nums outline-none focus:ring-1 ${portionMode ? 'text-amber-500 focus:border-amber-500 focus:ring-amber-500' : 'text-app-accent focus:border-app-accent focus:ring-app-accent'} placeholder:text-app-muted/30`}
+	                        />
+                        <div className="absolute -top-2.5 -right-2 bg-app-surface text-app-muted text-[8px] font-bold px-1.5 py-0.5 border border-app-border rounded uppercase">
+                          {portionMode ? "portions" : "batches"}
                         </div>
-                        {/* COMPUTER INDICATOR */}
-                        {(() => {
-                          const node = activeNodes[recipe.id];
-                          if (!node || node.scale <= 0) return null;
-                          const intent = planIntent[recipe.id];
-                          const manualVal = parseFloat(intent?.val) || 0;
-
-                          // Compare in the correct unit context
-                          const isUnderPlanned = portionMode
-                            ? (node.portions > (manualVal + 0.05))
-                            : (node.scale > (manualVal + 0.01));
-
-                          if (!isUnderPlanned) return null;
-
-                          return (
-                            <div className={`absolute top-[105%] right-0 flex items-center gap-1 text-[9px] font-black uppercase bg-app-bg px-2 py-0.5 rounded border shadow-md whitespace-nowrap z-20 ${portionMode ? 'text-amber-500 border-amber-500/30' : 'text-app-accent border-app-accent/30'}`}>
-                              <Zap size={10} fill="currentColor" /> Suggested: {portionMode
-                                ? `${Math.round(node.portions)} ppl`
-                                : `${node.scale.toFixed(1)} bth`}
-                            </div>
-                          );
-                        })()}
+                        {planIntent[recipe.id] && activeNodes[recipe.id]?.scale !== undefined && Math.abs(activeNodes[recipe.id].scale - 1) > 0.001 && (
+                          <div className={`absolute -bottom-2 -left-0 text-[7px] font-black px-1 rounded-sm border ${activeNodes[recipe.id].scale > 1.01 ? 'bg-app-danger/10 text-app-danger border-app-danger/20' : 'bg-app-accent/10 text-app-accent border-app-accent/20'}`}>
+                            x{activeNodes[recipe.id].scale.toFixed(2)} SCALE
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1496,42 +2077,105 @@ const SopMain = () => {
 
             {/* CONSOLIDATED MARKET LIST */}
             <section className="lg:col-span-7 bg-app-surface border border-app-border rounded-lg flex flex-col min-h-[600px] overflow-hidden">
-              <div className="bg-app-accent text-app-bg px-6 py-5 flex justify-between items-center border-b border-app-border">
+              <div className="bg-app-accent text-app-bg px-6 py-5 flex justify-between items-center gap-3 border-b border-app-border">
                 <h2 className="font-bold uppercase text-xs tracking-widest flex items-center gap-2">
                   <ShoppingCart size={18} /> Aggregated Order
-                  {portionMode && <span className="ml-2 bg-app-bg text-amber-500 text-[10px] px-2 py-0.5 rounded border border-amber-500/50 uppercase">Test Mode</span>}
                 </h2>
-                {Object.keys(activeOrigins).length > 0 && (
-                  <div className="flex gap-2 mr-auto ml-4 max-w-[40%] overflow-x-auto no-scroll pb-1">
-                    {Object.entries(activeOrigins).map(([id, val]) => {
-                      const r = recipes.find(rec => rec.id === id);
-                      if (!r) return null;
-                      const pSize = getPortionSize(r) || 1;
-                      const pCount = Math.round(val * (r.baseYieldPortions || 1));
-                      return (
-                        <div key={id} className={`flex items-center gap-1.5 px-2 py-0.5 rounded border text-[9px] font-bold whitespace-nowrap ${portionMode ? 'bg-amber-500/10 border-amber-500/30 text-amber-500' : 'bg-app-accent/10 border-app-accent/30 text-app-accent'}`}>
-                          <span>{r.name.split(' ').slice(0, 2).join(' ')}</span>
-                          <span className="opacity-50">|</span>
-                          <span>{portionMode ? `${pCount} ppl` : formatDisplay(val, r.unit).v + formatDisplay(val, r.unit).u}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-                <button onClick={() => {
-                  let csv = "CATEGORY,ITEM,STOCK_REQUIRED,UNIT\n";
-                  Object.entries(aggregatedOrder).forEach(([cat, items]) => {
-                    items.forEach(i => {
-                      const { val: v, unit: u } = formatQuantity(i.qty, i.unit);
-                      csv += `${translateIngredient(cat)},${translateIngredient(i.name)},${v},${u}\n`;
-                    });
-                  });
-                  const blob = new Blob([csv], { type: 'text/csv' });
-                  const url = window.URL.createObjectURL(blob);
-                  const a = document.createElement('a'); a.href = url; a.download = `market_order.csv`; a.click();
-                }} className="bg-app-bg/20 hover:bg-app-bg/30 p-2 rounded transition-colors text-app-bg">
-                  <FileSpreadsheet size={18} />
-                </button>
+                <div className="relative shrink-0">
+                  <button
+                    onClick={() => setIsMarketExportOpen((prev) => !prev)}
+                    className="px-4 py-2 hover:bg-app-bg/20 border border-app-bg/30 text-[10px] font-black uppercase rounded-xl transition-all flex items-center gap-2 text-app-bg"
+                  >
+                    <FileSpreadsheet size={14} className="opacity-80" />
+                    Export
+                  </button>
+                  {isMarketExportOpen && (
+                    <div className="absolute right-0 top-full z-30 mt-2 w-44 rounded-2xl border border-app-bg/30 bg-app-surface p-2 shadow-2xl">
+                      <button
+                        onClick={() => {
+                          let csv = "CATEGORY,ITEM,STOCK_REQUIRED,UNIT\n";
+                          Object.entries(aggregatedOrder).forEach(([cat, items]) => {
+                            items.forEach(i => {
+                              const { val: v, unit: u } = formatQuantity(i.qty, i.unit);
+                              csv += `${translateIngredient(cat)},${translateIngredient(i.name)},${v},${u}\n`;
+                            });
+                          });
+                          const blob = new Blob([csv], { type: 'text/csv' });
+                          const url = window.URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = `market_order.csv`;
+                          a.click();
+                          setIsMarketExportOpen(false);
+                        }}
+                        className="w-full rounded-xl border border-app-border bg-app-bg px-3 py-2 text-left text-[10px] font-black uppercase text-app-text transition-all hover:border-app-accent hover:text-app-accent flex items-center gap-2"
+                      >
+                        <FileSpreadsheet size={14} />
+                        CSV File
+                      </button>
+                      <button
+                        onClick={() => {
+                          const rows = Object.entries(aggregatedOrder).flatMap(([cat, items]) =>
+                            items.map((i) => {
+                              const display = formatQuantity(i.qty, i.unit);
+                              return `<tr><td style="padding:8px 10px;border-bottom:1px solid #333;">${translateIngredient(cat)}</td><td style="padding:8px 10px;border-bottom:1px solid #333;">${translateIngredient(i.name)}</td><td style="padding:8px 10px;border-bottom:1px solid #333;text-align:right;">${display.val}</td><td style="padding:8px 10px;border-bottom:1px solid #333;">${display.unit}</td></tr>`;
+                            })
+                          ).join('');
+                          const printWindow = window.open('', '_blank', 'width=900,height=700');
+                          if (!printWindow) return;
+                          printWindow.document.open();
+                          printWindow.document.write(`<!doctype html>
+                            <html>
+                              <head>
+                                <title>Market Order</title>
+                                <style>
+                                  @page { size: A4 portrait; margin: 10mm; }
+                                  * { box-sizing: border-box; }
+                                  body { font-family: Inter, Arial, sans-serif; margin: 0; color: #111; }
+                                  .page { width: 100%; }
+                                  h1 { font-size: 18px; margin-bottom: 16px; }
+                                  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+                                  th { text-align: left; padding: 8px 10px; border-bottom: 2px solid #111; }
+                                  @media print { html, body { margin: 0; padding: 0; } }
+                                </style>
+                              </head>
+                              <body>
+                                <div class="page">
+                                  <h1>Kabile Market Order</h1>
+                                  <table>
+                                    <thead>
+                                      <tr>
+                                        <th>Category</th>
+                                        <th>Item</th>
+                                        <th style="text-align:right;">Qty</th>
+                                        <th>Unit</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>${rows}</tbody>
+                                  </table>
+                                </div>
+                                <script>
+                                  window.addEventListener('load', function () {
+                                    setTimeout(function () {
+                                      window.focus();
+                                      window.print();
+                                    }, 300);
+                                  });
+                                </script>
+                              </body>
+                            </html>
+                          `);
+                          printWindow.document.close();
+                          setIsMarketExportOpen(false);
+                        }}
+                        className="mt-2 w-full rounded-xl border border-app-border bg-app-bg px-3 py-2 text-left text-[10px] font-black uppercase text-app-text transition-all hover:border-app-accent hover:text-app-accent flex items-center gap-2"
+                      >
+                        <FileText size={14} />
+                        PDF File
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
               <div className="p-0 flex-1 overflow-y-auto max-h-[700px] custom-scroll">
                 {Object.keys(aggregatedOrder).length === 0 ? (
@@ -1541,15 +2185,19 @@ const SopMain = () => {
                     <p className="text-xs text-app-muted max-w-[250px]">Input daily production targets on the left to calculate required stock quantities.</p>
                   </div>
                 ) : (
-                  <table className="w-full text-left border-collapse">
+                  <table className="w-full text-left border-collapse table-fixed">
+                    <colgroup>
+                      <col className="w-[60%]" />
+                      <col className="w-[40%]" />
+                    </colgroup>
                     <tbody className="divide-y divide-app-border">
                       {Object.entries(aggregatedOrder).map(([cat, items]) => (
                         <React.Fragment key={cat}>
                           <tr className="bg-app-bg"><td colSpan="2" className="px-6 py-2 border-y border-app-border"><span className="text-[10px] font-bold uppercase text-app-muted tracking-widest flex items-center gap-2"><Tag size={10} /> {translateIngredient(cat)}</span></td></tr>
                           {items.map((item, i) => (
-                            <tr key={i} className="hover:bg-app-bg transition-colors">
-                              <td className="px-6 py-4 font-medium text-[15px] text-app-text">{translateIngredient(item.name)}</td>
-                              <td className="px-6 py-4 text-right whitespace-nowrap">
+                            <tr key={i} className="hover:bg-app-bg transition-colors h-[64px]">
+                              <td className="px-6 py-4 font-medium text-[15px] text-app-text truncate">{translateIngredient(item.name)}</td>
+                              <td className="px-6 py-4 text-right whitespace-nowrap overflow-hidden">
                                 <span className="font-bold text-2xl tabular-nums text-app-accent">
                                   {formatDisplay(item.qty, item.unit).v}
                                 </span>
@@ -1586,6 +2234,7 @@ const SopMain = () => {
           </div>
         )}
       </div>
+      )}
       <footer className="text-center text-app-muted text-[10px] font-bold uppercase tracking-widest py-12 flex justify-center items-center gap-2 opacity-30 mt-10">
         <Utensils size={12} /> Operations Suite
       </footer>

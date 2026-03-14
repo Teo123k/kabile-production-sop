@@ -4,6 +4,16 @@ const SettingsContext = createContext();
 
 export const useSettings = () => useContext(SettingsContext);
 
+const safeParseJSON = (raw, fallback) => {
+    if (!raw) return fallback;
+    try {
+        return JSON.parse(raw);
+    } catch (e) {
+        console.warn('[Settings] Invalid JSON in localStorage, using fallback.', e);
+        return fallback;
+    }
+};
+
 export const SettingsProvider = ({ children }) => {
     const [theme, setTheme] = useState(() => localStorage.getItem('sop-theme') || 'dark');
     const [language, setLanguage] = useState(() => localStorage.getItem('sop-lang') || 'EN');
@@ -12,19 +22,27 @@ export const SettingsProvider = ({ children }) => {
     const [mainPortionSize, setMainPortionSize] = useState(() => parseInt(localStorage.getItem('sop-main-portion')) || 250);
     const [sidePortionSize, setSidePortionSize] = useState(() => parseInt(localStorage.getItem('sop-side-portion')) || 100);
     const [starterPortionSize, setStarterPortionSize] = useState(() => parseInt(localStorage.getItem('sop-starter-portion')) || 150);
+    const [portionWeightStew, setPortionWeightStew] = useState(() => parseInt(localStorage.getItem('sop-portion-weight-stew')) || 380);
+    const [portionWeightMeatStirFry, setPortionWeightMeatStirFry] = useState(() => parseInt(localStorage.getItem('sop-portion-weight-meat-stir-fry')) || 300);
+    const [portionWeightVegStirFry, setPortionWeightVegStirFry] = useState(() => parseInt(localStorage.getItem('sop-portion-weight-veg-stir-fry')) || 280);
+    const [portionWeightCurry, setPortionWeightCurry] = useState(() => parseInt(localStorage.getItem('sop-portion-weight-curry')) || 350);
+    const [portionWeightCarb, setPortionWeightCarb] = useState(() => parseInt(localStorage.getItem('sop-portion-weight-carb')) || 250);
+    const [portionWeightMainCarb, setPortionWeightMainCarb] = useState(() => parseInt(localStorage.getItem('sop-portion-weight-main-carb')) || 420);
+    const [portionWeightSide, setPortionWeightSide] = useState(() => parseInt(localStorage.getItem('sop-portion-weight-side-class')) || 90);
+    const [portionWeightSalad, setPortionWeightSalad] = useState(() => parseInt(localStorage.getItem('sop-portion-weight-salad')) || 120);
     const [volumeFocus, setVolumeFocus] = useState(() => parseInt(localStorage.getItem('sop-volume-focus')) || 50);
     const [portionsPerBatch, setPortionsPerBatch] = useState(() => parseInt(localStorage.getItem('sop-portions-per-batch')) || 50);
     const [menuMix, setMenuMix] = useState(() => {
         const saved = localStorage.getItem('sop-menu-mix');
         // Default example mix for a few key items if none exists
-        return saved ? JSON.parse(saved) : { 'korean-fire-chicken': 30, 'korean-fried-chicken': 40, 'kimchi': 100 };
+        return safeParseJSON(saved, { 'korean-fire-chicken': 30, 'korean-fried-chicken': 40, 'kimchi': 100 });
     });
     const [batchSettings, setBatchSettings] = useState(() => {
         const saved = localStorage.getItem('sop-batch-settings');
-        return saved ? JSON.parse(saved) : {
+        return safeParseJSON(saved, {
             defaultPortionsPerBatch: 50,
             minPortions: 50
-        };
+        });
     });
 
     useEffect(() => {
@@ -63,6 +81,38 @@ export const SettingsProvider = ({ children }) => {
     useEffect(() => {
         localStorage.setItem('sop-starter-portion', starterPortionSize);
     }, [starterPortionSize]);
+
+    useEffect(() => {
+        localStorage.setItem('sop-portion-weight-stew', portionWeightStew);
+    }, [portionWeightStew]);
+
+    useEffect(() => {
+        localStorage.setItem('sop-portion-weight-meat-stir-fry', portionWeightMeatStirFry);
+    }, [portionWeightMeatStirFry]);
+
+    useEffect(() => {
+        localStorage.setItem('sop-portion-weight-veg-stir-fry', portionWeightVegStirFry);
+    }, [portionWeightVegStirFry]);
+
+    useEffect(() => {
+        localStorage.setItem('sop-portion-weight-curry', portionWeightCurry);
+    }, [portionWeightCurry]);
+
+    useEffect(() => {
+        localStorage.setItem('sop-portion-weight-carb', portionWeightCarb);
+    }, [portionWeightCarb]);
+
+    useEffect(() => {
+        localStorage.setItem('sop-portion-weight-main-carb', portionWeightMainCarb);
+    }, [portionWeightMainCarb]);
+
+    useEffect(() => {
+        localStorage.setItem('sop-portion-weight-side-class', portionWeightSide);
+    }, [portionWeightSide]);
+
+    useEffect(() => {
+        localStorage.setItem('sop-portion-weight-salad', portionWeightSalad);
+    }, [portionWeightSalad]);
 
     useEffect(() => {
         localStorage.setItem('sop-menu-mix', JSON.stringify(menuMix));
@@ -164,6 +214,22 @@ export const SettingsProvider = ({ children }) => {
         setSidePortionSize,
         starterPortionSize,
         setStarterPortionSize,
+        portionWeightStew,
+        setPortionWeightStew,
+        portionWeightMeatStirFry,
+        setPortionWeightMeatStirFry,
+        portionWeightVegStirFry,
+        setPortionWeightVegStirFry,
+        portionWeightCurry,
+        setPortionWeightCurry,
+        portionWeightCarb,
+        setPortionWeightCarb,
+        portionWeightMainCarb,
+        setPortionWeightMainCarb,
+        portionWeightSide,
+        setPortionWeightSide,
+        portionWeightSalad,
+        setPortionWeightSalad,
         volumeFocus,
         setVolumeFocus,
         portionsPerBatch,

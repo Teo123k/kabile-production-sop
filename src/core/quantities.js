@@ -1,4 +1,4 @@
-import { chefRound } from './units';
+import { chefRound } from './units.js';
 
 /**
  * @typedef {Object} FormattedQuantity
@@ -18,8 +18,22 @@ import { chefRound } from './units';
 export function formatQuantity(val, unit = '', unitSystem = 'metric') {
     let displayVal = val;
     let displayUnit = unit || '';
-
     const uMatch = displayUnit.toLowerCase();
+
+    // STEP 3: Validate Unit Input
+    const KNOWN_UNITS = [
+        'g', 'kg', 'ml', 'l', 'liter', 'litre', 'oz', 'lb', 'fl oz',
+        'cup', 'qt', 'portion', 'portions', 'pcs', 'ea', 'tbsp', 'tsp', 'pinch'
+    ];
+
+    if (displayUnit && !KNOWN_UNITS.includes(uMatch)) {
+        console.warn(`[UNIT] Unknown unit "${displayUnit}" — passing through without conversion`);
+    }
+
+    if (typeof val !== 'number' || isNaN(val)) {
+        console.warn(`[UNIT] Non-numeric value "${val}" for unit "${displayUnit}"`);
+        return { val: String(val || 0), unit: displayUnit };
+    }
 
     if (unitSystem === 'imperial') {
         if (uMatch === 'g' || uMatch === 'kg') {

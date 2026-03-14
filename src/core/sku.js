@@ -40,23 +40,35 @@ const normalize = (val) => {
  */
 export function resolveRecipeId(ing, recipes = []) {
     if (!ing) return null;
-    const s = normalize(ing.sku);
+    // Original 's' for SKU-based normalization, 'n' for name-based
+    const originalSkuNormalized = normalize(ing.sku);
     const n = normalize(ing.name);
 
     // Tier 1: Explicit Registry (SKU_TO_RECIPE_MAP)
-    if (SKU_TO_RECIPE_MAP[ing.sku]) return SKU_TO_RECIPE_MAP[ing.sku];
+    if (ing.sku && SKU_TO_RECIPE_MAP[ing.sku]) return SKU_TO_RECIPE_MAP[ing.sku];
 
-    // Tier 2: Direct Match (ID, SKU, or Recipe_ID)
-    const directMatch = recipes.find(r =>
-        r.id === ing.sku ||
-        normalize(r.sku) === s ||
-        normalize(r.recipe_id) === s
-    );
-    if (directMatch) return directMatch.id;
+    // Tier 2: Search for SKU property or Recipe Name/ID match
+    // This 's' is a more comprehensive normalized key for Tier 2 matching
+    const s = normalize(ing.sku || ing.recipe_id || ing.name);
+    if (!s) return null; // FIX (Step 2): Don't match empty strings
 
+    const directMatch = recipes.find(r => {
+        const rSku = normalize(r.sku);
+        const rId = normalize(r.id || r.recipe_id);
+        const matchFound = (ing.sku && r.id === ing.sku) || (s && rSku === s) || (s && rId === s);
+        return matchFound;
+    });
+
+    if (directMatch) return directMatch.id || directMatch.recipe_id;
     // Tier 3: Name-Based Fallback (Professional Fail-Safe)
-    const nameMatch = recipes.find(r => normalize(r.name) === n);
+    const nameMatch = recipes.find(r => n && normalize(r.name) === n);
     if (nameMatch) return nameMatch.id;
+
+    // After implementation of STEP 1:
+    const suspectTerms = ['sauce', 'base', 'stock', 'marinade', 'coating', 'roux', 'glaze', 'paste', 'wash'];
+    if (ing.sku || (n && suspectTerms.some(t => n.includes(t)))) {
+        console.warn(`[BOM] SKU resolution failed for ingredient: "${ing.name}" (sku: ${ing.sku || 'none'})`);
+    }
 
     return null;
 }

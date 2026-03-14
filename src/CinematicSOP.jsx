@@ -1,11 +1,12 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from './supabaseClient';
 import { useSettings } from './SettingsContext';
+import { Pencil, Check, X } from 'lucide-react';
 
 const SLIDE_STYLES = `
         .slider-window {
-          width: 1280px;
-          height: 720px;
+          width: 1120px;
+          height: 630px;
           position: relative;
           border: 1px solid var(--border);
           overflow: hidden;
@@ -23,7 +24,7 @@ const SLIDE_STYLES = `
         }
 
         .slide {
-          min-width: 1280px;
+          min-width: 1120px;
           height: 100%;
           display: grid;
           grid-template-rows: 100px 1fr 60px;
@@ -66,9 +67,9 @@ const SLIDE_STYLES = `
 
         .dashboard-grid {
           display: grid;
-          grid-template-columns: 1fr 400px;
-          gap: 20px;
-          padding: 30px 50px 50px 50px;
+          grid-template-columns: 1fr 340px;
+          gap: 16px;
+          padding: 24px 36px 36px 36px;
           overflow-y: auto;
           overflow-x: hidden;
         }
@@ -87,7 +88,7 @@ const SLIDE_STYLES = `
         .op-card {
           background: var(--surface);
           border: 1px solid var(--border);
-          padding: 20px;
+          padding: 16px;
           position: relative;
           border-left: 3px solid var(--border);
         }
@@ -101,7 +102,7 @@ const SLIDE_STYLES = `
         .bullet-item li::before { content: "›"; position: absolute; left: -10px; color: var(--highlight); }
 
         .logic-column { display: flex; flex-direction: column; gap: 15px; }
-        .logic-module { background: var(--surface-low); border: 1px solid var(--border); padding: 20px; border-radius: 4px; }
+        .logic-module { background: var(--surface-low); border: 1px solid var(--border); padding: 16px; border-radius: 4px; }
         .strategy-header { font-size: 10px; font-weight: 900; color: #f59e0b; text-transform: uppercase; margin-bottom: 15px; letter-spacing: 1px; display: flex; align-items: center; gap: 8px; }
 
         .stat-line { display: flex; justify-content: space-between; font-size: 11px; padding: 8px 0; border-bottom: 1px solid var(--border); }
@@ -150,12 +151,57 @@ const SLIDE_STYLES = `
  * @param {string} initialDishName - Optional dish name to start on
  * @param {Function} onExit      - Callback to close the view
  */
-const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
+const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit, portionTargets = {}, recipeIdByName = {} }) => {
     const [slides, setSlides] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [current, setCurrent] = useState(0);
-    const { language, volumeFocus, translateIngredient } = useSettings();
+    const [editingSlideId, setEditingSlideId] = useState(null);
+    const [editingDraft, setEditingDraft] = useState(null);
+    const { translateIngredient } = useSettings();
+
+    const normalize = useCallback((s) => (s || '').toLowerCase().trim(), []);
+    const getProfileForDish = useCallback((dishName) => {
+        const recipeId = recipeIdByName[normalize(dishName)] || '';
+        const portions = parseFloat(portionTargets[recipeId]) || 0;
+        return portions >= 50 ? 'high_volume' : 'regular';
+    }, [normalize, portionTargets, recipeIdByName]);
+
+    const resolveProfileData = useCallback((raw, dishName = '') => {
+        if (!raw || typeof raw !== 'object') return {};
+        const activeProfile = getProfileForDish(dishName);
+        if (raw.regular || raw.high_volume) {
+            return raw[activeProfile] || raw.regular || {};
+        }
+        return raw;
+    }, [getProfileForDish]);
+
+    const mergePresentationEnvelope = useCallback((raw, dishName, patch) => {
+        const activeProfile = getProfileForDish(dishName);
+        if (raw && typeof raw === 'object' && (raw.regular || raw.high_volume)) {
+            const regularBase = raw.regular || {};
+            return {
+                ...raw,
+                [activeProfile]: {
+                    ...regularBase,
+                    ...(raw[activeProfile] || {}),
+                    ...patch
+                }
+            };
+        }
+        return {
+            ...(raw || {}),
+            ...patch
+        };
+    }, [getProfileForDish]);
+
+    const toMultiline = useCallback((value) => Array.isArray(value) ? value.join('\n') : '', []);
+    const fromMultiline = useCallback((value) => (
+        String(value || '')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean)
+    ), []);
 
     // ── Fetch from both tables and merge ───────────────────────────────────────
     useEffect(() => {
@@ -171,8 +217,6 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
 
                 if (presentationRes.error) throw presentationRes.error;
 
-                const normalize = (s) => (s || '').toLowerCase().trim();
-
                 // Build a map of the richest possible presentation data
                 const richDataMap = new Map();
 
@@ -184,7 +228,7 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
                         richDataMap.set(norm, {
                             id: row.id || norm,
                             dish_name: row.dish_name,
-                            data: parsed
+                            rawData: parsed
                         });
                     }
                 });
@@ -196,14 +240,17 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
                     const parsed = typeof row.presentation_json === 'string' ? JSON.parse(row.presentation_json) : row.presentation_json;
 
                     if (!existing) {
-                        richDataMap.set(norm, { id: row.id, dish_name: row.dish_name, data: parsed });
-                    } else if (parsed && parsed.strategy && parsed.strategy.note && parsed.strategy.note.length > (existing.data?.strategy?.note?.length || 0)) {
+                        richDataMap.set(norm, { id: row.id, dish_name: row.dish_name, rawData: parsed });
+                    } else if (parsed && parsed.strategy && parsed.strategy.note && parsed.strategy.note.length > (resolveProfileData(existing.rawData, row.dish_name)?.strategy?.note?.length || 0)) {
                         // Only overwrite if the new data is actually longer/richer
-                        richDataMap.set(norm, { id: row.id, dish_name: row.dish_name, data: parsed });
+                        richDataMap.set(norm, { id: row.id, dish_name: row.dish_name, rawData: parsed });
                     }
                 });
 
-                const parsed = Array.from(richDataMap.values());
+                const parsed = Array.from(richDataMap.values()).map((row) => ({
+                    ...row,
+                    data: resolveProfileData(row.rawData, row.dish_name)
+                }));
                 setSlides(parsed);
 
                 // Jump to initial dish if provided
@@ -212,6 +259,7 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
                         s.dish_name?.toLowerCase() === initialDishName?.toLowerCase()
                     );
                     if (idx >= 0) setCurrent(idx);
+                    else setCurrent(0);
                 }
             } catch (fetchError) {
                 console.error('Presentations fetch error:', fetchError);
@@ -221,7 +269,100 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
             }
         }
         fetchPresentations();
-    }, [clientId, initialDishName]);
+    }, [clientId, initialDishName, normalize, resolveProfileData]);
+
+    const activeSlide = slides[current] || null;
+    const activeData = activeSlide?.data || {};
+
+    const defaultMissionLines = useMemo(() => ([
+        'Follow standard technique for optimal yield',
+        'Ensure station organization before start',
+        'Maintain quality standards at all times'
+    ]), []);
+
+    const startEditing = useCallback(() => {
+        if (!activeSlide) return;
+        const sd = activeSlide.data || {};
+        setEditingSlideId(activeSlide.id);
+        setEditingDraft({
+            title: sd.title || activeSlide.dish_name || '',
+            meta: sd.meta || '',
+            mission: toMultiline(sd.mission?.length ? sd.mission : defaultMissionLines),
+            weeklyBatch: toMultiline(sd.weekly?.batch),
+            weeklyBuffer: toMultiline(sd.weekly?.buffer),
+            morningTasks: toMultiline(sd.morning?.tasks),
+            morningForward: toMultiline(sd.morning?.forward),
+            serviceSetup: toMultiline(sd.service?.setup),
+            serviceGarnish: toMultiline(sd.service?.garnish),
+            holdingMethod: sd.holding?.method || '',
+            holdingLimit: sd.holding?.limit || '',
+            holdingTemp: sd.holding?.temp || '',
+            maintenance: sd.maintenance || '',
+            strategyMethod: sd.strategy?.method || '',
+            strategyTemp: sd.strategy?.temp || '',
+            strategyTips: sd.strategy?.tips || '',
+            strategyNote: sd.strategy?.note || ''
+        });
+    }, [activeSlide, defaultMissionLines, toMultiline]);
+
+    const cancelEditing = useCallback(() => {
+        setEditingSlideId(null);
+        setEditingDraft(null);
+    }, []);
+
+    const saveEditing = useCallback(async () => {
+        if (!activeSlide || !editingDraft) return;
+        const patch = {
+            title: editingDraft.title.trim(),
+            meta: editingDraft.meta.trim(),
+            mission: fromMultiline(editingDraft.mission),
+            weekly: {
+                batch: fromMultiline(editingDraft.weeklyBatch),
+                buffer: fromMultiline(editingDraft.weeklyBuffer)
+            },
+            morning: {
+                tasks: fromMultiline(editingDraft.morningTasks),
+                forward: fromMultiline(editingDraft.morningForward)
+            },
+            service: {
+                setup: fromMultiline(editingDraft.serviceSetup),
+                garnish: fromMultiline(editingDraft.serviceGarnish)
+            },
+            holding: {
+                method: editingDraft.holdingMethod.trim(),
+                limit: editingDraft.holdingLimit.trim(),
+                temp: editingDraft.holdingTemp.trim()
+            },
+            maintenance: editingDraft.maintenance.trim(),
+            strategy: {
+                method: editingDraft.strategyMethod.trim(),
+                temp: editingDraft.strategyTemp.trim(),
+                tips: editingDraft.strategyTips.trim(),
+                note: editingDraft.strategyNote.trim()
+            }
+        };
+
+        const nextRawData = mergePresentationEnvelope(activeSlide.rawData, activeSlide.dish_name, patch);
+        const { error: saveError } = await supabase
+            .from('sop_presentations')
+            .upsert({
+                client_id: clientId,
+                dish_name: activeSlide.dish_name,
+                presentation_json: nextRawData
+            }, { onConflict: 'client_id,dish_name' });
+
+        if (saveError) {
+            console.error('Presentation save failed:', saveError);
+            return;
+        }
+
+        setSlides((prev) => prev.map((slide) => (
+            slide.id === activeSlide.id
+                ? { ...slide, rawData: nextRawData, data: resolveProfileData(nextRawData, slide.dish_name) }
+                : slide
+        )));
+        cancelEditing();
+    }, [activeSlide, cancelEditing, clientId, editingDraft, fromMultiline, mergePresentationEnvelope, resolveProfileData]);
 
     // ── Navigation ────────────────────────────────────────────────────────────
     const moveSlide = useCallback((dir) => {
@@ -274,7 +415,54 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
         );
     }
 
-    const p = slides[current]?.data || {};
+    const p = activeData;
+    const renderEditableList = (value, key, fallback = []) => {
+        if (editingSlideId === activeSlide?.id && editingDraft) {
+            return (
+                <textarea
+                    className="h-[86px] max-h-[86px] w-full resize-none overflow-y-auto rounded border border-app-accent/30 bg-app-bg px-3 py-2 text-[11px] leading-4 text-app-text outline-none"
+                    value={editingDraft[key]}
+                    onChange={(e) => setEditingDraft((prev) => ({ ...prev, [key]: e.target.value }))}
+                />
+            );
+        }
+        const items = value?.length ? value : fallback;
+        return (
+            <ul className="mission-list">
+                {items.map((item, i) => <li key={i}>{item}</li>)}
+            </ul>
+        );
+    };
+
+    const renderEditableBulletList = (value, key, fallbackText) => {
+        if (editingSlideId === activeSlide?.id && editingDraft) {
+            return (
+                <textarea
+                    className="min-h-[100px] w-full rounded border border-app-accent/30 bg-app-bg px-3 py-2 text-[11px] leading-5 text-app-text outline-none"
+                    value={editingDraft[key]}
+                    onChange={(e) => setEditingDraft((prev) => ({ ...prev, [key]: e.target.value }))}
+                />
+            );
+        }
+        return (
+            <ul>
+                {(value?.length ? value : [fallbackText]).map((item, i) => <li key={i}>{item}</li>)}
+            </ul>
+        );
+    };
+
+    const renderEditableValue = (value, key, fallback = '') => {
+        if (editingSlideId === activeSlide?.id && editingDraft) {
+            return (
+                <input
+                    className="w-full rounded border border-app-accent/30 bg-app-bg px-2 py-1 text-[11px] font-bold text-app-text outline-none"
+                    value={editingDraft[key]}
+                    onChange={(e) => setEditingDraft((prev) => ({ ...prev, [key]: e.target.value }))}
+                />
+            );
+        }
+        return <span className="intel-value">{value || fallback}</span>;
+    };
 
     // ── Render ─────────────────────────────────────────────────────────────────
     return (
@@ -291,33 +479,57 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
                 </button>
 
                 {/* Slides Container */}
-                <div className="slides-container" style={{ transform: `translateX(-${current * 1280}px)` }}>
+                <div className="slides-container" style={{ transform: `translateX(-${current * 1120}px)` }}>
                     {slides.map((slide, index) => {
                         const sd = slide.data || {};
+                        const isEditingThisSlide = editingSlideId === slide.id;
                         return (
                             <div key={slide.id} className="slide">
                                 <header className="slide-header">
                                     <div className="header-title-box" style={{ minWidth: '400px' }}>
-                                        <p>{sd.meta || 'RECIPE // BRIGADE_SOP'}</p>
+                                        {isEditingThisSlide ? (
+                                            <input
+                                                className="mb-1 w-full rounded border border-app-accent/30 bg-app-bg px-2 py-1 font-mono text-[10px] uppercase tracking-[2px] text-app-accent outline-none"
+                                                value={editingDraft?.meta || ''}
+                                                onChange={(e) => setEditingDraft((prev) => ({ ...prev, meta: e.target.value }))}
+                                            />
+                                        ) : (
+                                            <p>{sd.meta || 'RECIPE // BRIGADE_SOP'}</p>
+                                        )}
                                         <div className="flex items-center gap-3">
-                                            <h2>{translateIngredient((sd.title || slide.dish_name || '').replace(/^\d+[\s.\-_]*/, ''))}</h2>
-                                            <div className="bg-app-accent/10 border border-app-accent/30 px-2 py-1 rounded text-[10px] font-black text-app-accent uppercase tracking-widest">
-                                                {volumeFocus} PPL Focus
-                                            </div>
+                                            {isEditingThisSlide ? (
+                                                <input
+                                                    className="w-full rounded border border-app-accent/30 bg-app-bg px-3 py-2 text-[26px] font-extrabold uppercase tracking-[-1px] text-app-text outline-none"
+                                                    value={editingDraft?.title || ''}
+                                                    onChange={(e) => setEditingDraft((prev) => ({ ...prev, title: e.target.value }))}
+                                                />
+                                            ) : (
+                                                <h2>{translateIngredient((sd.title || slide.dish_name || '').replace(/^\d+[\s.\-_]*/, ''))}</h2>
+                                            )}
+                                            {index === current && (
+                                                <div className="flex items-center gap-2">
+                                                    {isEditingThisSlide ? (
+                                                        <>
+                                                            <button onClick={saveEditing} className="inline-flex items-center gap-1 rounded border border-app-accent/30 bg-app-accent/10 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-app-accent">
+                                                                <Check size={12} /> Save
+                                                            </button>
+                                                            <button onClick={cancelEditing} className="inline-flex items-center gap-1 rounded border border-app-border bg-app-surface px-2 py-1 text-[10px] font-black uppercase tracking-widest text-app-text">
+                                                                <X size={12} /> Exit
+                                                            </button>
+                                                        </>
+                                                    ) : (
+                                                        <button onClick={startEditing} className="inline-flex items-center gap-1 rounded border border-app-border bg-app-surface px-2 py-1 text-[10px] font-black uppercase tracking-widest text-app-text">
+                                                            <Pencil size={12} /> Edit
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
 
                                     <div className="dish-mission">
                                         <span className="mission-label">Training Focus // Dish Mission</span>
-                                        <ul className="mission-list">
-                                            {sd.mission?.map((m, i) => <li key={i}>{m}</li>) || (
-                                                <>
-                                                    <li>Follow standard technique for optimal yield</li>
-                                                    <li>Ensure station organization before start</li>
-                                                    <li>Maintain quality standards at all times</li>
-                                                </>
-                                            )}
-                                        </ul>
+                                        {renderEditableList(sd.mission, 'mission', defaultMissionLines)}
                                     </div>
 
                                     <div className="header-viz">
@@ -336,11 +548,11 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
                                             <div className="bullet-grid">
                                                 <div className="bullet-item">
                                                     <h4>Batch Cycle</h4>
-                                                    <ul>{sd.weekly?.batch?.map((b, i) => <li key={i}>{b}</li>) || <li>Standard Batch</li>}</ul>
+                                                    {renderEditableBulletList(sd.weekly?.batch, 'weeklyBatch', 'Standard Batch')}
                                                 </div>
                                                 <div className="bullet-item">
                                                     <h4>Min. Quantity</h4>
-                                                    <ul>{sd.weekly?.buffer?.map((b, i) => <li key={i}>{b}</li>) || <li>Maintain Buffer</li>}</ul>
+                                                    {renderEditableBulletList(sd.weekly?.buffer, 'weeklyBuffer', 'Maintain Buffer')}
                                                 </div>
                                             </div>
                                         </div>
@@ -351,11 +563,11 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
                                             <div className="bullet-grid">
                                                 <div className="bullet-item">
                                                     <h4>Daily Prep</h4>
-                                                    <ul>{sd.morning?.tasks?.map((t, i) => <li key={i}>{t}</li>) || <li>Follow SOP</li>}</ul>
+                                                    {renderEditableBulletList(sd.morning?.tasks, 'morningTasks', 'Follow SOP')}
                                                 </div>
                                                 <div className="bullet-item">
                                                     <h4>Forward Prep</h4>
-                                                    <ul>{sd.morning?.forward?.map((f, i) => <li key={i}>{f}</li>) || <li>Check Delivery</li>}</ul>
+                                                    {renderEditableBulletList(sd.morning?.forward, 'morningForward', 'Check Delivery')}
                                                 </div>
                                             </div>
                                         </div>
@@ -366,17 +578,11 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
                                             <div className="bullet-grid">
                                                 <div className="bullet-item">
                                                     <h4>Service Setup</h4>
-                                                    <ul>{sd.service?.setup?.map((s, i) => <li key={i}>{s}</li>) || <li>Line check</li>}</ul>
+                                                    {renderEditableBulletList(sd.service?.setup, 'serviceSetup', 'Line check')}
                                                 </div>
                                                 <div className="bullet-item">
                                                     <h4>Garnish Logic</h4>
-                                                    <ul>
-                                                        {sd.service?.garnish ? (
-                                                            sd.service.garnish.map((g, i) => <li key={i}>{g}</li>)
-                                                        ) : (
-                                                            <li>Standard garnish</li>
-                                                        )}
-                                                    </ul>
+                                                    {renderEditableBulletList(sd.service?.garnish, 'serviceGarnish', 'Standard garnish')}
                                                 </div>
                                             </div>
                                         </div>
@@ -391,24 +597,32 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
                                             <div className="intel-spec-grid">
                                                 <div className="intel-spec-item">
                                                     <span className="intel-label">Storage Method</span>
-                                                    <span className="intel-value">{sd.holding?.method || 'COLD STORE'}</span>
+                                                    {renderEditableValue(sd.holding?.method, 'holdingMethod', 'COLD STORE')}
                                                 </div>
                                                 <div className="intel-spec-item">
                                                     <span className="intel-label">Shelf Life Limit</span>
-                                                    <span className="intel-value">{sd.holding?.limit || '3 DAYS'}</span>
+                                                    {renderEditableValue(sd.holding?.limit, 'holdingLimit', '3 DAYS')}
                                                 </div>
                                                 <div className="intel-spec-item">
                                                     <span className="intel-label">Holding Temp</span>
-                                                    <span className="intel-value">{sd.holding?.temp || '2-4°C'}</span>
+                                                    {renderEditableValue(sd.holding?.temp, 'holdingTemp', '2-4°C')}
                                                 </div>
                                                 <div className="intel-spec-item">
                                                     <span className="intel-label">Audit Frequency</span>
                                                     <span className="intel-value">EVERY SESSION</span>
                                                 </div>
-                                                {sd.maintenance ? (
+                                                {(sd.maintenance || isEditingThisSlide) ? (
                                                     <div className="intel-spec-item intel-caution">
                                                         <span className="intel-label">CRITICAL MANAGER CAUTION</span>
-                                                        <span className="intel-value">{sd.maintenance}</span>
+                                                        {isEditingThisSlide ? (
+                                                            <textarea
+                                                                className="mt-1 min-h-[70px] w-full rounded border border-app-accent/30 bg-app-bg px-3 py-2 text-[11px] font-bold text-amber-400 outline-none"
+                                                                value={editingDraft?.maintenance || ''}
+                                                                onChange={(e) => setEditingDraft((prev) => ({ ...prev, maintenance: e.target.value }))}
+                                                            />
+                                                        ) : (
+                                                            <span className="intel-value">{sd.maintenance}</span>
+                                                        )}
                                                     </div>
                                                 ) : null}
                                             </div>
@@ -417,10 +631,18 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit }) => {
                                         {/* Strategy Module */}
                                         <div className="logic-module strategy">
                                             <span className="strategy-header"><i className="fa-solid fa-gauge-high"></i> Chef Strategy // Tips</span>
-                                            <div className="stat-line"><span>Focus</span><span>{sd.strategy?.method || 'SOP Standard'}</span></div>
-                                            <div className="stat-line"><span>Execution</span><span>{sd.strategy?.temp || 'N/A'}</span></div>
-                                            <div className="stat-line"><span>Tips & Tricks</span><span>{sd.strategy?.tips || '—'}</span></div>
-                                            <p className="text-[10px] text-[#94a3b8] mt-[12px] leading-relaxed">{sd.strategy?.note || 'Follow master technique.'}</p>
+                                            <div className="stat-line"><span>Focus</span><span>{isEditingThisSlide ? <input className="w-full rounded border border-app-accent/30 bg-app-bg px-2 py-1 text-[11px] font-bold text-app-text outline-none" value={editingDraft?.strategyMethod || ''} onChange={(e) => setEditingDraft((prev) => ({ ...prev, strategyMethod: e.target.value }))} /> : (sd.strategy?.method || 'SOP Standard')}</span></div>
+                                            <div className="stat-line"><span>Execution</span><span>{isEditingThisSlide ? <input className="w-full rounded border border-app-accent/30 bg-app-bg px-2 py-1 text-[11px] font-bold text-app-text outline-none" value={editingDraft?.strategyTemp || ''} onChange={(e) => setEditingDraft((prev) => ({ ...prev, strategyTemp: e.target.value }))} /> : (sd.strategy?.temp || 'N/A')}</span></div>
+                                            <div className="stat-line"><span>Tips & Tricks</span><span>{isEditingThisSlide ? <textarea className="min-h-[72px] w-full rounded border border-app-accent/30 bg-app-bg px-2 py-1 text-[11px] font-bold text-app-text outline-none" value={editingDraft?.strategyTips || ''} onChange={(e) => setEditingDraft((prev) => ({ ...prev, strategyTips: e.target.value }))} /> : (sd.strategy?.tips || '—')}</span></div>
+                                            {isEditingThisSlide ? (
+                                                <textarea
+                                                    className="mt-[12px] min-h-[80px] w-full rounded border border-app-accent/30 bg-app-bg px-3 py-2 text-[11px] leading-relaxed text-[#94a3b8] outline-none"
+                                                    value={editingDraft?.strategyNote || ''}
+                                                    onChange={(e) => setEditingDraft((prev) => ({ ...prev, strategyNote: e.target.value }))}
+                                                />
+                                            ) : (
+                                                <p className="text-[10px] text-[#94a3b8] mt-[12px] leading-relaxed">{sd.strategy?.note || 'Follow master technique.'}</p>
+                                            )}
                                         </div>
                                     </div>
                                 </div>
