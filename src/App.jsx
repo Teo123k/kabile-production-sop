@@ -81,13 +81,14 @@ const EDIT_CATEGORY_ORDER = ['BASE', 'DAIRY', 'DRY', 'FAT', 'PROTEIN', 'SPICE', 
 const LIQUID_LIKE_CATEGORIES = new Set(['WET / LIQUID', 'STOCK']);
 const DISH_STYLE_TO_PORTION_CLASS = {
   stew: 'stew',
+  meat_stir_fry: 'meat_stir_fry',
+  veg_stir_fry: 'veg_stir_fry',
   curry: 'curry',
   carb: 'carb',
   main_carb: 'main_carb',
   side: 'side',
   salad: 'salad',
-  prep: 'prep',
-  sauce: 'sauce',
+  marinade: 'marinade',
   component: 'component'
 };
 
@@ -143,6 +144,10 @@ const SopMain = () => {
     setPortionWeightSide,
     portionWeightSalad,
     setPortionWeightSalad,
+    portionWeightMarinade,
+    setPortionWeightMarinade,
+    portionWeightComponent,
+    setPortionWeightComponent,
     volumeFocus,
     setVolumeFocus,
     portionsPerBatch,
@@ -178,7 +183,9 @@ const SopMain = () => {
     portionWeightCarb,
     portionWeightMainCarb,
     portionWeightSide,
-    portionWeightSalad
+    portionWeightSalad,
+    portionWeightMarinade,
+    portionWeightComponent
   }), [
     mainPortionSize,
     sidePortionSize,
@@ -191,7 +198,9 @@ const SopMain = () => {
     portionWeightCarb,
     portionWeightMainCarb,
     portionWeightSide,
-    portionWeightSalad
+    portionWeightSalad,
+    portionWeightMarinade,
+    portionWeightComponent
   ]);
 
   const chefRound = useCallback((val, unit = '') =>
@@ -1247,7 +1256,9 @@ const SopMain = () => {
                             ['Carb', portionWeightCarb, setPortionWeightCarb],
                             ['Main + Carb', portionWeightMainCarb, setPortionWeightMainCarb],
                             ['Side', portionWeightSide, setPortionWeightSide],
-                            ['Salad', portionWeightSalad, setPortionWeightSalad]
+                            ['Salad', portionWeightSalad, setPortionWeightSalad],
+                            ['Marinade', portionWeightMarinade, setPortionWeightMarinade],
+                            ['Component', portionWeightComponent, setPortionWeightComponent]
                           ].map(([label, value, setter]) => (
                             <label key={label} className="flex items-center justify-between gap-3 bg-app-surface border border-app-border rounded-lg px-3 py-2">
                               <span className="text-[10px] font-black uppercase text-app-text">{label}</span>
@@ -1466,18 +1477,15 @@ const SopMain = () => {
                               });
                             }}
                           >
-                            <option value="main">Main</option>
+                            <option value="stew">Stew</option>
+                            <option value="meat_stir_fry">Meat Stir Fry</option>
+                            <option value="veg_stir_fry">Veg Stir Fry</option>
+                            <option value="curry">Curry</option>
                             <option value="carb">Carb</option>
                             <option value="main_carb">Main + Carb</option>
                             <option value="side">Side</option>
-                            <option value="starter">Starter</option>
-                            <option value="stew">Stew</option>
-                            <option value="curry">Curry</option>
-                            <option value="soup">Soup</option>
+                            <option value="salad">Salad</option>
                             <option value="marinade">Marinade</option>
-                            <option value="sauce">Sauce</option>
-                            <option value="base">Base</option>
-                            <option value="prep">Prep</option>
                             <option value="component">Component</option>
                           </select>
                         ) : (
@@ -1514,29 +1522,6 @@ const SopMain = () => {
                             />
                           </div>
                         )}
-                        {isEditMode && (
-                          <div className="flex items-center gap-1.5 bg-app-bg px-2 py-0.5 rounded border border-app-accent/30 min-w-0">
-                            <Scale size={10} className="text-app-accent shrink-0" />
-                            <select
-                              className="bg-transparent border-none outline-none text-[10px] font-black text-app-accent uppercase tracking-widest w-28 sm:w-32 focus:ring-0 min-w-0"
-                              value={activeRecipe.portion_class || ''}
-                              onChange={(e) => updateActiveRecipeLocal({ portion_class: e.target.value })}
-                            >
-                              <option value="">NO CLASS</option>
-                              <option value="stew">STEW</option>
-                              <option value="meat_stir_fry">MEAT STIR FRY</option>
-                              <option value="veg_stir_fry">VEG STIR FRY</option>
-                              <option value="curry">CURRY</option>
-                              <option value="carb">CARB</option>
-                              <option value="main_carb">MAIN + CARB</option>
-                              <option value="side">SIDE</option>
-                              <option value="salad">SALAD</option>
-                              <option value="prep">PREP</option>
-                              <option value="sauce">SAUCE</option>
-                              <option value="component">COMPONENT</option>
-                            </select>
-                          </div>
-                        )}
                       </div>
                     </div>
                   </div>
@@ -1544,12 +1529,12 @@ const SopMain = () => {
                   {/* ACTION BUTTONS REMOVED FROM SIDE BAR */}
 
                   {/* COMPACT SCALING BOX */}
-	                  <div className="w-full min-w-0 grid grid-cols-1 2xl:grid-cols-[138px_minmax(0,1fr)_206px] xl:grid-cols-[126px_minmax(0,1fr)_188px] items-stretch gap-2 px-2.5 py-2.5 bg-app-surface/50 print:hidden">
-	                    <div className="text-center min-w-0 shrink-0 bg-app-bg/55 border border-app-border rounded-xl px-2 py-2 flex min-h-[84px] flex-col justify-center">
-	                      <label className="block text-[8px] font-black uppercase text-app-muted mb-1 tracking-tighter">
+	                  <div className="w-full min-w-0 grid grid-cols-1 xl:grid-cols-[120px_188px_186px] 2xl:grid-cols-[124px_194px_192px] items-center gap-2 px-2 py-1.5 bg-app-surface/50 print:hidden">
+	                    <div className="text-center min-w-0 shrink-0 bg-app-bg/55 border border-app-border rounded-xl px-2 py-1 flex min-h-[72px] h-full flex-col justify-start self-center">
+	                      <label className="block text-[8px] font-black uppercase text-app-muted mb-1 tracking-tight leading-none">
 	                        {portionMode ? "Target Portions" : "Target Batches"}
 	                      </label>
-	                      <div className="flex items-center justify-center gap-1.5 min-h-[36px]">
+	                      <div className="flex items-center justify-center gap-1.5 min-h-[30px]">
                         <input
                           type="number"
                           step={portionMode ? "1" : "0.5"}
@@ -1571,13 +1556,13 @@ const SopMain = () => {
 	                            }
 	                          }}
 	                          onBlur={() => handleCommitTarget(selectedId, portionMode ? 'portion' : 'batch')}
-	                          className={`w-16 bg-app-bg border border-app-border rounded px-2 py-1 font-black text-lg text-center tabular-nums outline-none focus:ring-1 ${portionMode ? 'text-amber-500 focus:ring-amber-500' : 'text-app-accent focus:ring-app-accent'}`}
+	                          className={`w-14 bg-app-bg border border-app-border rounded px-2 py-0.5 font-black text-base text-center tabular-nums outline-none focus:ring-1 ${portionMode ? 'text-amber-500 focus:ring-amber-500' : 'text-app-accent focus:ring-app-accent'}`}
 	                        />
-                        <div className="w-[66px] text-left">
-                          <span className="block font-bold text-[9px] text-app-muted uppercase leading-none">
+                        <div className="w-[52px] text-left">
+                          <span className="block font-bold text-[8px] text-app-muted uppercase leading-none">
                             {portionMode ? "PORTIONS" : "BATCHES"}
                           </span>
-                          <span className="block min-h-[12px] text-[9px] font-black text-app-accent">
+                          <span className="block min-h-[10px] text-[8px] font-black text-app-accent leading-none">
                             {portionMode ? '\u00A0' : '\u00A0'}
                           </span>
                         </div>
@@ -1585,11 +1570,11 @@ const SopMain = () => {
                     </div>
 
                     {/* Kitchen Intelligence Display (Simplified V3.1) */}
-	                    <div className="flex min-w-0 flex-col justify-center border border-app-border rounded-xl bg-app-bg/35 px-2.5 py-2 min-h-[84px]">
+	                    <div className="flex min-w-0 flex-col justify-start border border-app-border rounded-xl bg-app-bg/35 px-2.5 py-1 min-h-[72px] h-full self-center">
 	                      <div className="flex items-start gap-2">
 	                        <Scale size={12} className="text-app-accent opacity-50" />
 	                        <div className="min-w-0 flex-1">
-                          <div className="min-h-[12px]">
+                          <div className="min-h-[8px]">
                           {isScaled ? (
                             <div className="flex items-baseline gap-1 opacity-40 leading-none">
                               <span className="text-[8px] text-app-muted font-bold line-through">
@@ -1604,19 +1589,19 @@ const SopMain = () => {
                             </div>
                           )}
                           </div>
-                          <div className="flex items-baseline gap-1 text-[12px] font-black uppercase text-app-text min-h-[16px] whitespace-nowrap">
+                          <div className="flex items-baseline gap-1 text-[11px] font-black uppercase text-app-text min-h-[12px] whitespace-nowrap leading-none">
                             <span className="shrink-0">TOTAL WEIGHT:</span>
                             <span className="tabular-nums">{totalEdibleWeightFormatted.v}</span>
                             <span className="text-app-accent">{totalEdibleWeightFormatted.u}</span>
                           </div>
-	                          <span className="block text-[8px] text-app-accent mt-0.5 min-h-[18px]">
+	                          <span className="block text-[8px] text-app-accent mt-0.5 min-h-[10px] leading-none">
 	                            {isComponentRecipe
 	                              ? `${hasIntent ? 'Target' : 'Original'} Yield: ${totalEdibleWeightFormatted.v}${totalEdibleWeightFormatted.u}`
 	                              : (portionMode
 	                                ? `${hasIntent ? 'Target' : 'Original'} Yield: ${hasIntent ? displayTargetPortions : displayCurrentPortionCount} portions`
 	                                : `${hasIntent ? 'Target' : 'Default'} Yield: ${productionTotalPortions} portions`)}
 	                          </span>
-                          <span className={`block text-[8px] mt-0.5 min-h-[12px] ${selectedEstimatedUseGrams > 0.01 ? 'text-blue-300' : 'invisible'}`}>
+                          <span className={`block text-[8px] mt-0.5 min-h-[10px] leading-none ${selectedEstimatedUseGrams > 0.01 ? 'text-blue-300' : 'invisible'}`}>
                             {selectedEstimatedUseGrams > 0.01 ? (
                               <>
                               ESTIMATED USE: {formatDisplay(selectedEstimatedUseGrams, 'g').v} {formatDisplay(selectedEstimatedUseGrams, 'g').u}
@@ -1625,7 +1610,7 @@ const SopMain = () => {
                               <>&nbsp;</>
                             )}
                           </span>
-                          <span className={`mt-0.5 inline-flex min-h-[12px] items-center gap-1 text-[8px] ${selectedShortageGrams > 0.01 ? 'text-amber-400' : 'invisible'}`}>
+                          <span className={`mt-0.5 inline-flex min-h-[10px] items-center gap-1 text-[8px] leading-none ${selectedShortageGrams > 0.01 ? 'text-amber-400' : 'invisible'}`}>
                             {selectedShortageGrams > 0.01 ? (
                               <>
                               <AlertTriangle size={10} className="shrink-0" />
@@ -1642,17 +1627,17 @@ const SopMain = () => {
                       </div>
                     </div>
 
-		                    <div className="grid shrink-0 min-w-0 self-center grid-cols-3 gap-1 w-full xl:w-[188px] 2xl:w-[206px]">
+		                    <div className="grid shrink-0 min-w-0 self-center grid-cols-3 gap-1.5 w-full xl:w-[186px] 2xl:w-[192px]">
 		                      <button
 		                        onClick={handleDefaultSelected}
-			                        className="bg-app-bg border border-app-border text-app-text hover:border-app-accent hover:text-app-accent shadow-lg shadow-app-border/10 text-[6px] font-black uppercase px-1 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1 min-h-[30px] w-full"
+			                        className="bg-app-bg border border-app-border text-app-text hover:border-app-accent hover:text-app-accent shadow-lg shadow-app-border/10 text-[7px] font-black uppercase px-1.5 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1 min-h-[34px] w-full text-center leading-tight"
 			                      >
 			                        <RotateCcw size={10} /> DEFAULT
 			                      </button>
 
 		                      <button
 		                        onClick={handleDefaultAll}
-			                        className={`${Math.abs((planIntent[activeRecipe?.id]?.val ?? activeDefaultIntent.val) - activeDefaultIntent.val) > 0.01 ? 'bg-amber-500 shadow-amber-500/20' : 'bg-app-accent shadow-app-accent/20'} text-app-bg shadow-lg text-[6px] font-black uppercase px-1 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1 min-h-[30px] w-full`}
+			                        className={`${Math.abs((planIntent[activeRecipe?.id]?.val ?? activeDefaultIntent.val) - activeDefaultIntent.val) > 0.01 ? 'bg-amber-500 shadow-amber-500/20' : 'bg-app-accent shadow-app-accent/20'} text-app-bg shadow-lg text-[7px] font-black uppercase px-1.5 py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1 min-h-[34px] w-full text-center leading-tight`}
 			                      >
 			                        <RotateCcw size={10} /> DEFAULT ALL
 			                      </button>
@@ -1671,7 +1656,7 @@ const SopMain = () => {
 	                            });
 	                            setPlanIntent(allScaled);
 	                          }}
-			                          className="bg-app-accent/10 border border-app-accent/20 hover:bg-app-accent hover:text-app-bg shadow-lg shadow-app-accent/10 text-[6px] font-black uppercase px-1 py-1.5 rounded-lg transition-colors text-app-accent flex items-center justify-center gap-1 min-h-[30px] w-full"
+			                          className="bg-app-accent/10 border border-app-accent/20 hover:bg-app-accent hover:text-app-bg shadow-lg shadow-app-accent/10 text-[7px] font-black uppercase px-1.5 py-1.5 rounded-lg transition-colors text-app-accent flex items-center justify-center gap-1 min-h-[34px] w-full text-center leading-tight"
 			                        >
 			                          <Copy size={10} /> APPLY ALL
 			                        </button>

@@ -188,7 +188,9 @@ const PORTION_CLASS_DEFAULTS = {
     carb: 250,
     main_carb: 420,
     side: 90,
-    salad: 120
+    salad: 120,
+    marinade: 120,
+    component: 120
 };
 
 const PORTION_CLASS_SETTING_KEYS = {
@@ -199,10 +201,12 @@ const PORTION_CLASS_SETTING_KEYS = {
     carb: 'portionWeightCarb',
     main_carb: 'portionWeightMainCarb',
     side: 'portionWeightSide',
-    salad: 'portionWeightSalad'
+    salad: 'portionWeightSalad',
+    marinade: 'portionWeightMarinade',
+    component: 'portionWeightComponent'
 };
 
-const NON_PLATED_PORTION_CLASSES = new Set(['prep', 'sauce', 'component']);
+const NON_PLATED_PORTION_CLASSES = new Set(['prep', 'sauce']);
 
 export function getRecipePortionWeight(recipe, settings = {}, allRecipes = []) {
     if (!recipe) return getPortionWeight(recipe, settings, allRecipes);

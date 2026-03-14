@@ -30,6 +30,8 @@ export const SettingsProvider = ({ children }) => {
     const [portionWeightMainCarb, setPortionWeightMainCarb] = useState(() => parseInt(localStorage.getItem('sop-portion-weight-main-carb')) || 420);
     const [portionWeightSide, setPortionWeightSide] = useState(() => parseInt(localStorage.getItem('sop-portion-weight-side-class')) || 90);
     const [portionWeightSalad, setPortionWeightSalad] = useState(() => parseInt(localStorage.getItem('sop-portion-weight-salad')) || 120);
+    const [portionWeightMarinade, setPortionWeightMarinade] = useState(() => parseInt(localStorage.getItem('sop-portion-weight-marinade')) || 120);
+    const [portionWeightComponent, setPortionWeightComponent] = useState(() => parseInt(localStorage.getItem('sop-portion-weight-component')) || 120);
     const [volumeFocus, setVolumeFocus] = useState(() => parseInt(localStorage.getItem('sop-volume-focus')) || 50);
     const [portionsPerBatch, setPortionsPerBatch] = useState(() => parseInt(localStorage.getItem('sop-portions-per-batch')) || 50);
     const [menuMix, setMenuMix] = useState(() => {
@@ -113,6 +115,14 @@ export const SettingsProvider = ({ children }) => {
     useEffect(() => {
         localStorage.setItem('sop-portion-weight-salad', portionWeightSalad);
     }, [portionWeightSalad]);
+
+    useEffect(() => {
+        localStorage.setItem('sop-portion-weight-marinade', portionWeightMarinade);
+    }, [portionWeightMarinade]);
+
+    useEffect(() => {
+        localStorage.setItem('sop-portion-weight-component', portionWeightComponent);
+    }, [portionWeightComponent]);
 
     useEffect(() => {
         localStorage.setItem('sop-menu-mix', JSON.stringify(menuMix));
@@ -230,6 +240,10 @@ export const SettingsProvider = ({ children }) => {
         setPortionWeightSide,
         portionWeightSalad,
         setPortionWeightSalad,
+        portionWeightMarinade,
+        setPortionWeightMarinade,
+        portionWeightComponent,
+        setPortionWeightComponent,
         volumeFocus,
         setVolumeFocus,
         portionsPerBatch,
