@@ -79,6 +79,7 @@ const CLIENT_CONFIGS = {
 
 const EDIT_CATEGORY_ORDER = ['BASE', 'DAIRY', 'DRY', 'FAT', 'PROTEIN', 'SPICE', 'STOCK', 'WET / LIQUID', 'OTHER'];
 const LIQUID_LIKE_CATEGORIES = new Set(['WET / LIQUID', 'STOCK']);
+const toTestId = (value = '') => String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const DISH_STYLE_TO_PORTION_CLASS = {
   stew: 'stew',
   meat_stir_fry: 'meat_stir_fry',
@@ -91,6 +92,31 @@ const DISH_STYLE_TO_PORTION_CLASS = {
   marinade: 'marinade',
   component: 'component'
 };
+const PORTION_CLASS_TO_DISH_STYLE = {
+  stew: 'stew',
+  meat_stir_fry: 'meat_stir_fry',
+  veg_stir_fry: 'veg_stir_fry',
+  curry: 'curry',
+  carb: 'carb',
+  main_carb: 'main_carb',
+  side: 'side',
+  salad: 'salad',
+  marinade: 'marinade',
+  component: 'component'
+};
+const PORTION_CLASS_OPTIONS = [
+  ['stew', 'Stew'],
+  ['meat_stir_fry', 'Meat Stir Fry'],
+  ['veg_stir_fry', 'Veg Stir Fry'],
+  ['curry', 'Curry'],
+  ['carb', 'Carb'],
+  ['main_carb', 'Main + Carb'],
+  ['side', 'Side'],
+  ['salad', 'Salad'],
+  ['marinade', 'Marinade'],
+  ['component', 'Component']
+];
+const PORTION_CLASS_LABELS = Object.fromEntries(PORTION_CLASS_OPTIONS);
 
 
 const SopMain = () => {
@@ -164,6 +190,10 @@ const SopMain = () => {
   const [showDeleted, setShowDeleted] = useState(false);
   const [isRecipeMenuOpen, setIsRecipeMenuOpen] = useState(false);
   const [isMarketExportOpen, setIsMarketExportOpen] = useState(false);
+  const [isScalerExportOpen, setIsScalerExportOpen] = useState(false);
+  const [scalerExportFormat, setScalerExportFormat] = useState('pdf');
+  const [scalerExportLayout, setScalerExportLayout] = useState('horizontal');
+  const [scalerExportRecipeIds, setScalerExportRecipeIds] = useState([]);
   const [offlineStatus, setOfflineStatus] = useState(false);
   const [editIngBase, setEditIngBase] = useState(null); // {idx, field}
   const [isEditMode, setIsEditMode] = useState(false);
@@ -533,6 +563,12 @@ const SopMain = () => {
     }
   }, [activeRecipe?.id, selectedId]);
 
+  useEffect(() => {
+    if (activeRecipe?.id && scalerExportRecipeIds.length === 0) {
+      setScalerExportRecipeIds([activeRecipe.id]);
+    }
+  }, [activeRecipe?.id, scalerExportRecipeIds.length]);
+
   // STEP 2 — INTENT-AWARE SCALING CONTRACT
   const hasIntent = !!planIntent[activeRecipe?.id];
 
@@ -629,12 +665,16 @@ const SopMain = () => {
     const groups = filteredRecipesList.reduce((acc, r) => {
       const portionClass = (r.portion_class || r.portionClass || '').toLowerCase();
       const style = (r.dishStyle || r.style || 'other').toLowerCase();
+      const isFoundationPrep =
+        ['prep', 'base', 'component'].includes(portionClass) ||
+        style === 'prep' ||
+        r.id === 'japanese-curry-roux';
       const groupLabel =
         portionClass === 'carb' ? 'Carb Base Recipes' :
           portionClass === 'main_carb' ? 'Main + Carb Dishes' :
             portionClass === 'salad' ? 'Salads' :
               portionClass === 'side' ? 'Sides & Condiments' :
-                ['prep', 'base', 'component'].includes(portionClass) || style === 'prep' ? 'Foundational Prep (Tier 1)' :
+                isFoundationPrep ? 'Foundational Prep (Tier 1)' :
                   style === 'marinade' ? 'Marinades & Pre-Prep' :
                     ['sauce', 'glaze'].includes(style) || portionClass === 'sauce' ? 'Finishing Sauces' :
                       ['stew', 'curry', 'main', 'meat_stir_fry', 'veg_stir_fry'].includes(portionClass) || ['grilled', 'fried', 'stir_fried', 'stew', 'curry', 'main'].includes(style) ? 'Main Dishes' :
@@ -832,19 +872,9 @@ const SopMain = () => {
   }, [portionMode, coreSettings, recipes, getRecipePortionWeight]);
 
   const handleDefaultAll = useCallback(() => {
-    if (portionMode) {
-      setPlanIntent({});
-      setMenuMix({});
-      return;
-    }
-
-    const reset = {};
-    recipes.forEach(r => {
-      reset[r.id] = getDefaultIntentForRecipe(r);
-    });
-    setPlanIntent(reset);
+    setPlanIntent({});
     setMenuMix({});
-  }, [portionMode, recipes, getDefaultIntentForRecipe, setMenuMix]);
+  }, [setPlanIntent, setMenuMix]);
 
   const handleDefaultSelected = useCallback(() => {
     if (!activeRecipe?.id) return;
@@ -869,6 +899,8 @@ const SopMain = () => {
     setEditingIngId(null);
     setCheckedItems({});
     setLastDeletedIngredient(null);
+    setShowDeleted(false);
+    setIsScalerExportOpen(false);
     setIsEditMode(true);
   }, [handleDefaultAll]);
 
@@ -1061,6 +1093,249 @@ const SopMain = () => {
     const a = document.createElement('a'); a.href = url; a.download = `${activeRecipe.id}_recipe.csv`; a.click();
   };
 
+  const escapeCsv = useCallback((value) => {
+    const text = String(value ?? '');
+    if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+    return text;
+  }, []);
+
+  const escapeHtml = useCallback((value) => (
+    String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+  ), []);
+
+  const downloadFile = useCallback((filename, content, type) => {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const getRecipeExportSnapshot = useCallback((recipe) => {
+    if (!recipe) return null;
+    const hasRecipeIntent = !!planIntent[recipe.id];
+    const nodeData = hasRecipeIntent ? activeNodes[recipe.id] : null;
+    const baselineYield = getRecipeBaselineGrams(recipe, false, coreSettings);
+    const baselineEdible = getRecipeBaselineGrams(recipe, true, coreSettings);
+    const defaultBatchGrams = getBatchTargetGrams(recipe, 1);
+    const defaultScale = !portionMode ? (defaultBatchGrams / Math.max(0.001, baselineYield || 1)) : 1;
+    const intent = planIntent[recipe.id];
+
+    let rootScale = 1;
+    if (hasRecipeIntent && intent?.val) {
+      if (intent.mode === 'batch') {
+        rootScale = getBatchTargetGrams(recipe, intent.val) / Math.max(0.001, baselineYield || 1);
+      } else if (intent.mode === 'portion') {
+        const portionWeight = getRecipePortionWeight(recipe);
+        const targetGrams = portionWeight ? intent.val * portionWeight : baselineYield;
+        rootScale = targetGrams / Math.max(0.001, baselineYield || 1);
+      } else {
+        rootScale = intent.val / Math.max(0.001, baselineYield || 1);
+      }
+    }
+
+    const displayScale = hasRecipeIntent ? rootScale : defaultScale;
+    const currentYield = nodeData
+      ? nodeData.weight
+      : (portionMode ? baselineYield : baselineYield * displayScale);
+    const currentEdible = nodeData
+      ? (nodeData.edibleWeight || nodeData.weight)
+      : (portionMode ? baselineEdible : baselineEdible * displayScale);
+    const portionWeight = getRecipePortionWeight(recipe) || coreGetPortionWeight(recipe, coreSettings, recipes);
+    const currentPortions = nodeData
+      ? Number(nodeData.portions.toFixed(1))
+      : Number((currentYield / Math.max(0.001, portionWeight || 1)).toFixed(1));
+    const roundedPortions = roundKitchenPortions(currentPortions);
+    const factor = portionMode ? (hasRecipeIntent ? rootScale : 1) : displayScale;
+    const ingredients = (recipe.ingredients || []).map((ing) => {
+      const qty = (Number(ing?.qty) || 0) * factor;
+      const display = formatQuantity(qty, ing?.unit);
+      return {
+        category: (ing?.category || 'other').toUpperCase(),
+        name: translateIngredient(ing?.name || ''),
+        sku: ing?.sku || '',
+        value: display.val,
+        unit: display.unit
+      };
+    });
+    const totalWeightDisplay = formatDisplay(currentEdible, 'g');
+    const yieldLine = portionMode
+      ? `${hasRecipeIntent ? 'Target' : 'Original'} Yield: ${roundedPortions} portions`
+      : `${hasRecipeIntent ? 'Target' : 'Default'} Yield: ${Math.round(currentPortions)} portions`;
+
+    return {
+      id: recipe.id,
+      name: translateIngredient(recipe.name).replace(/^\d+[\s.\-_]*/, ''),
+      titleMeta: recipe.tier || '',
+      cuisine: recipe.cuisine || '',
+      classLabel: recipe.dishStyle || recipe.portion_class || '',
+      targetLabel: portionMode ? 'Target Portions' : 'Target Batches',
+      targetValue: hasRecipeIntent ? intent?.val ?? (portionMode ? roundedPortions : 1) : (portionMode ? roundedPortions : 1),
+      targetUnit: portionMode ? 'Portions' : 'Batches',
+      totalWeightValue: `${totalWeightDisplay.v} ${totalWeightDisplay.u}`,
+      yieldLine,
+      ingredients
+    };
+  }, [planIntent, activeNodes, coreSettings, portionMode, recipes, getBatchTargetGrams, getRecipePortionWeight, formatQuantity, formatDisplay, translateIngredient]);
+
+  const toggleScalerExportRecipe = useCallback((recipeId) => {
+    setScalerExportRecipeIds((prev) => (
+      prev.includes(recipeId)
+        ? prev.filter((id) => id !== recipeId)
+        : [...prev, recipeId]
+    ));
+  }, []);
+
+  const openScalerPrintView = useCallback((recipesToPrint, layout = 'horizontal') => {
+    const printWindow = window.open('', '_blank', 'width=1200,height=900');
+    if (!printWindow) return;
+    const gridClass = layout === 'vertical' ? 'sheet-grid-vertical' : 'sheet-grid-horizontal';
+    const cardsHtml = recipesToPrint.map((recipe) => {
+      const ingredientsByCategory = recipe.ingredients.reduce((acc, ing) => {
+        if (!acc[ing.category]) acc[ing.category] = [];
+        acc[ing.category].push(ing);
+        return acc;
+      }, {});
+      const sections = Object.entries(ingredientsByCategory).map(([category, items]) => `
+        <div class="section">
+          <div class="section-title">${escapeHtml(category)}</div>
+          <div class="rows">
+            ${items.map((ing) => `
+              <div class="row">
+                <span class="name">${escapeHtml(ing.name)}</span>
+                <span class="qty">${escapeHtml(ing.value)} ${escapeHtml(ing.unit)}</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `).join('');
+      return `
+        <article class="recipe-card">
+          <div class="recipe-head">
+            <div class="title-wrap">
+              <h2>${escapeHtml(recipe.name)}</h2>
+              <div class="meta-line">${escapeHtml(recipe.classLabel)}${recipe.titleMeta ? ` | ${escapeHtml(recipe.titleMeta)}` : ''}${recipe.cuisine ? ` | ${escapeHtml(recipe.cuisine)}` : ''}</div>
+            </div>
+            <div class="target-box">
+              <div class="target-label">${escapeHtml(recipe.targetLabel)}</div>
+              <div class="target-value">${escapeHtml(recipe.targetValue)} ${escapeHtml(recipe.targetUnit)}</div>
+            </div>
+          </div>
+          <div class="weight-line">Total Weight: ${escapeHtml(recipe.totalWeightValue)}</div>
+          <div class="yield-line">${escapeHtml(recipe.yieldLine)}</div>
+          ${sections}
+        </article>
+      `;
+    }).join('');
+
+    printWindow.document.open();
+    printWindow.document.write(`<!doctype html>
+      <html>
+        <head>
+          <title>Scaler Recipe Export</title>
+          <style>
+            @page { size: A4 ${layout === 'horizontal' ? 'landscape' : 'portrait'}; margin: 8mm; }
+            * { box-sizing: border-box; }
+            html, body { margin: 0; padding: 0; }
+            body { font-family: Arial, sans-serif; color: #111827; background: #fff; }
+            .page { width: 100%; }
+            .page-header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #111827; padding-bottom: 8px; margin-bottom: 10px; }
+            .page-header h1 { margin: 0; font-size: 18px; text-transform: uppercase; letter-spacing: 0.08em; }
+            .subtitle { font-size: 11px; color: #4b5563; text-transform: uppercase; }
+            .${gridClass} { display: grid; grid-template-columns: repeat(${layout === 'vertical' ? 2 : 3}, minmax(0, 1fr)); gap: 10px; align-items: start; }
+            .recipe-card { border: 1px solid #d1d5db; padding: 10px; break-inside: avoid; page-break-inside: avoid; }
+            .recipe-head { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+            .title-wrap h2 { margin: 0; font-size: 15px; line-height: 1.15; text-transform: uppercase; }
+            .meta-line { margin-top: 4px; font-size: 10px; color: #6b7280; text-transform: uppercase; }
+            .target-box { border: 1px solid #d1d5db; padding: 6px 8px; min-width: 120px; text-align: right; }
+            .target-label { font-size: 9px; text-transform: uppercase; color: #6b7280; }
+            .target-value { font-size: 16px; font-weight: 700; }
+            .weight-line { font-size: 12px; font-weight: 700; margin-bottom: 2px; text-transform: uppercase; }
+            .yield-line { font-size: 10px; color: #4b5563; margin-bottom: 8px; }
+            .section { margin-top: 8px; }
+            .section-title { font-size: 10px; font-weight: 700; text-transform: uppercase; margin-bottom: 4px; color: #6b7280; }
+            .row { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px solid #e5e7eb; padding: 4px 0; font-size: 10px; }
+            .name { font-weight: 600; }
+            .qty { white-space: nowrap; font-weight: 700; }
+          </style>
+        </head>
+        <body>
+          <div class="page">
+            <div class="page-header">
+              <div>
+                <h1>Scaler Recipe Export</h1>
+                <div class="subtitle">Kitchen recipe print | save as PDF</div>
+              </div>
+              <div class="subtitle">${escapeHtml(new Date().toLocaleDateString())}</div>
+            </div>
+            <div class="${gridClass}">
+              ${cardsHtml}
+            </div>
+          </div>
+          <script>
+            window.addEventListener('load', function () {
+              const triggerPrint = function () {
+                requestAnimationFrame(function () {
+                  requestAnimationFrame(function () {
+                    setTimeout(function () {
+                      window.focus();
+                      window.print();
+                    }, 800);
+                  });
+                });
+              };
+              if (document.fonts && document.fonts.ready) {
+                document.fonts.ready.then(triggerPrint).catch(triggerPrint);
+              } else {
+                triggerPrint();
+              }
+            });
+          </script>
+        </body>
+      </html>`);
+    printWindow.document.close();
+  }, [escapeHtml]);
+
+  const handleScalerExport = useCallback(() => {
+    const selectedRecipes = filteredRecipesList
+      .filter((recipe) => scalerExportRecipeIds.includes(recipe.id))
+      .map((recipe) => getRecipeExportSnapshot(recipe))
+      .filter(Boolean);
+    if (selectedRecipes.length === 0) return;
+
+    if (scalerExportFormat === 'csv') {
+      let csv = 'RECIPE,CLASS,CATEGORY,ITEM,SKU,QTY,UNIT,TARGET,TOTAL_WEIGHT\n';
+      selectedRecipes.forEach((recipe) => {
+        recipe.ingredients.forEach((ing) => {
+          csv += [
+            escapeCsv(recipe.name),
+            escapeCsv(recipe.classLabel),
+            escapeCsv(ing.category),
+            escapeCsv(ing.name),
+            escapeCsv(ing.sku),
+            escapeCsv(ing.value),
+            escapeCsv(ing.unit),
+            escapeCsv(`${recipe.targetValue} ${recipe.targetUnit}`),
+            escapeCsv(recipe.totalWeightValue)
+          ].join(',') + '\n';
+        });
+      });
+      downloadFile('scaler-recipes.csv', csv, 'text/csv;charset=utf-8');
+    } else {
+      openScalerPrintView(selectedRecipes, scalerExportLayout);
+    }
+    setIsScalerExportOpen(false);
+  }, [filteredRecipesList, scalerExportRecipeIds, getRecipeExportSnapshot, scalerExportFormat, scalerExportLayout, escapeCsv, downloadFile, openScalerPrintView]);
+
   if (loading) return (
     <div className="min-h-screen bg-app-bg text-app-accent flex flex-col items-center justify-center font-black uppercase tracking-widest gap-4">
       <Zap className="animate-bounce" size={48} />
@@ -1093,19 +1368,19 @@ const SopMain = () => {
         </div>
 
         <div className="flex min-w-0 flex-nowrap items-center justify-center overflow-hidden bg-app-surface border border-app-border rounded-lg p-1 gap-1 xl:justify-self-center">
-          <button onClick={() => setView('scaler')} className={`flex items-center gap-1.5 px-2.5 2xl:px-3 py-2 font-bold uppercase text-[8px] 2xl:text-[9px] rounded transition-colors whitespace-nowrap ${view === 'scaler' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
+          <button data-testid="nav-scaler" onClick={() => setView('scaler')} className={`flex items-center gap-1.5 px-2.5 2xl:px-3 py-2 font-bold uppercase text-[8px] 2xl:text-[9px] rounded transition-colors whitespace-nowrap ${view === 'scaler' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
             <Scale size={12} /> Scaler
           </button>
-          <button onClick={() => setView('ordering')} className={`flex items-center gap-1.5 px-2.5 2xl:px-3 py-2 font-bold uppercase text-[8px] 2xl:text-[9px] rounded transition-colors whitespace-nowrap ${view === 'ordering' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
+          <button data-testid="nav-market" onClick={() => setView('ordering')} className={`flex items-center gap-1.5 px-2.5 2xl:px-3 py-2 font-bold uppercase text-[8px] 2xl:text-[9px] rounded transition-colors whitespace-nowrap ${view === 'ordering' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
             <ShoppingCart size={12} /> Market
           </button>
-          <button onClick={() => setView('board')} className={`flex items-center gap-1.5 px-2.5 2xl:px-3 py-2 font-bold uppercase text-[8px] 2xl:text-[9px] rounded transition-colors whitespace-nowrap ${view === 'board' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
+          <button data-testid="nav-board" onClick={() => setView('board')} className={`flex items-center gap-1.5 px-2.5 2xl:px-3 py-2 font-bold uppercase text-[8px] 2xl:text-[9px] rounded transition-colors whitespace-nowrap ${view === 'board' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
             <ClipboardCheck size={12} /> Board
           </button>
           <button onClick={() => setView('presentation')} className={`flex items-center gap-1.5 px-2.5 2xl:px-3 py-2 font-bold uppercase text-[8px] 2xl:text-[9px] rounded transition-colors whitespace-nowrap ${view === 'presentation' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
             <LayoutDashboard size={12} /> Presentation
           </button>
-          <button onClick={() => setView('settings')} className={`flex items-center gap-1.5 px-2.5 2xl:px-3 py-2 font-bold uppercase text-[8px] 2xl:text-[9px] rounded transition-colors whitespace-nowrap ${view === 'settings' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
+          <button data-testid="nav-settings" onClick={() => setView('settings')} className={`flex items-center gap-1.5 px-2.5 2xl:px-3 py-2 font-bold uppercase text-[8px] 2xl:text-[9px] rounded transition-colors whitespace-nowrap ${view === 'settings' ? 'bg-app-accent text-app-bg' : 'text-app-muted hover:text-app-text'}`}>
             <SettingsIcon size={12} /> Master Rules
           </button>
         </div>
@@ -1114,6 +1389,7 @@ const SopMain = () => {
           {view === 'scaler' ? (
             <div className="flex w-full flex-nowrap items-center bg-app-surface border border-app-border rounded-lg p-1 gap-1 xl:w-auto">
               <button
+                data-testid="mode-batch"
                 onClick={() => setPortionMode(false)}
                 className={`flex flex-1 items-center gap-1 px-2 py-1.5 min-w-[78px] justify-center text-[8px] font-black uppercase rounded transition-all border xl:flex-none ${!portionMode ? 'bg-app-accent text-app-bg border-app-accent shadow-lg shadow-app-accent/20' : 'bg-app-surface text-app-muted border-app-border hover:text-app-text'}`}
               >
@@ -1121,6 +1397,7 @@ const SopMain = () => {
                 Batch
               </button>
               <button
+                data-testid="mode-portion"
                 onClick={() => setPortionMode(true)}
                 className={`flex flex-1 items-center gap-1 px-2 py-1.5 min-w-[78px] justify-center text-[8px] font-black uppercase rounded transition-all border xl:flex-none ${portionMode ? 'bg-amber-500 text-white border-amber-600 shadow-lg shadow-amber-500/20' : 'bg-app-surface text-app-muted border-app-border hover:text-app-text'}`}
               >
@@ -1265,6 +1542,7 @@ const SopMain = () => {
                               <div className="flex items-center gap-2">
                                 <input
                                   type="number"
+                                  data-testid={`setting-portion-class-${toTestId(label)}`}
                                   value={value}
                                   onChange={(e) => setter(parseInt(e.target.value) || 0)}
                                   className="bg-app-bg border border-app-border rounded px-2 py-1 w-20 text-right font-black text-lg text-app-accent outline-none focus:border-app-accent"
@@ -1334,6 +1612,7 @@ const SopMain = () => {
 	                      onClick={() => {
                           setEditingIngId(null);
                           setLastDeletedIngredient(null);
+                          setShowDeleted(false);
                           setIsEditMode(false);
                         }}
 	                      className="flex items-center gap-1 px-2 py-1.5 bg-app-bg text-app-muted hover:text-app-text border border-app-border rounded-lg text-[9px] font-black uppercase transition-all"
@@ -1345,21 +1624,97 @@ const SopMain = () => {
 	                      onClick={async () => {
 	                        await handleUpdateRecipe();
                           setLastDeletedIngredient(null);
+                          setShowDeleted(false);
                           setIsEditMode(false);
                         }}
 	                      className="flex items-center gap-1 px-2 py-1.5 bg-app-accent text-app-bg hover:brightness-110 rounded-lg text-[9px] font-black uppercase transition-all shadow-lg shadow-app-accent/20 border border-app-accent"
 	                    >
 	                      <Save size={11} /> SAVE TEMPLATE
 	                    </button>
+                      <button
+                        onClick={() => setShowDeleted(!showDeleted)}
+                        className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[9px] font-black uppercase transition-all border ${showDeleted ? 'bg-red-500 text-white border-red-600 shadow-lg shadow-red-500/20' : 'bg-app-bg text-app-muted border-app-border hover:border-app-muted'}`}
+                      >
+                        {showDeleted ? <Undo2 size={11} /> : <Trash2 size={11} />}
+                        {showDeleted ? "Back to Library" : "Restore Bin"}
+                      </button>
                     </>
 	                )}
-	                <button
-	                  onClick={() => setShowDeleted(!showDeleted)}
-	                  className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[9px] font-black uppercase transition-all border ${showDeleted ? 'bg-red-500 text-white border-red-600 shadow-lg shadow-red-500/20' : 'bg-app-bg text-app-muted border-app-border hover:border-app-muted'}`}
-	                >
-	                  {showDeleted ? <Undo2 size={11} /> : <Trash2 size={11} />}
-	                  {showDeleted ? "Back to Library" : "Restore Bin"}
-	                </button>
+                  {!isEditMode && !showDeleted && filteredRecipesList.length > 0 && (
+                    <div className="relative">
+                      <button
+                        onClick={() => setIsScalerExportOpen((prev) => !prev)}
+                        className="flex items-center gap-1 px-2.5 py-1.5 bg-app-bg text-app-muted hover:border-app-accent hover:text-app-accent border border-app-border rounded-lg text-[9px] font-black uppercase transition-all"
+                      >
+                        <FileText size={11} /> Export
+                      </button>
+                      {isScalerExportOpen && (
+                        <div className="absolute right-0 top-full z-40 mt-2 w-64 rounded-2xl border border-app-border bg-app-surface p-2 shadow-2xl">
+                          <div className="mb-2 text-[9px] font-black uppercase tracking-widest text-app-muted">Format</div>
+                          <div className="grid grid-cols-2 gap-1 mb-2">
+                            {['pdf', 'csv'].map((format) => (
+                              <button
+                                key={format}
+                                onClick={() => setScalerExportFormat(format)}
+                                className={`rounded-xl border px-2 py-2 text-[9px] font-black uppercase transition-all ${scalerExportFormat === format ? 'border-app-accent bg-app-accent text-app-bg' : 'border-app-border bg-app-bg text-app-text hover:border-app-accent'}`}
+                              >
+                                {format === 'pdf' ? 'PDF File' : 'CSV File'}
+                              </button>
+                            ))}
+                          </div>
+                          {scalerExportFormat === 'pdf' && (
+                            <>
+                              <div className="mb-2 text-[9px] font-black uppercase tracking-widest text-app-muted">Layout</div>
+                              <div className="grid grid-cols-2 gap-1 mb-2">
+                                {['horizontal', 'vertical'].map((layout) => (
+                                  <button
+                                    key={layout}
+                                    onClick={() => setScalerExportLayout(layout)}
+                                    className={`rounded-xl border px-2 py-2 text-[9px] font-black uppercase transition-all ${scalerExportLayout === layout ? 'border-app-accent bg-app-accent text-app-bg' : 'border-app-border bg-app-bg text-app-text hover:border-app-accent'}`}
+                                  >
+                                    {layout}
+                                  </button>
+                                ))}
+                              </div>
+                            </>
+                          )}
+                          <div className="mb-2 flex items-center justify-between">
+                            <div className="text-[9px] font-black uppercase tracking-widest text-app-muted">Recipes</div>
+                            <button
+                              onClick={() => setScalerExportRecipeIds(
+                                scalerExportRecipeIds.length === filteredRecipesList.length
+                                  ? []
+                                  : filteredRecipesList.map((recipe) => recipe.id)
+                              )}
+                              className="text-[9px] font-black uppercase text-app-accent"
+                            >
+                              {scalerExportRecipeIds.length === filteredRecipesList.length ? 'Clear All' : 'Select All'}
+                            </button>
+                          </div>
+                          <div className="max-h-56 overflow-auto space-y-1 pr-1">
+                            {filteredRecipesList.map((recipe) => (
+                              <label key={recipe.id} className="flex items-center gap-2 rounded-xl border border-app-border bg-app-bg px-2 py-2 text-[9px] font-black uppercase text-app-text">
+                                <input
+                                  type="checkbox"
+                                  checked={scalerExportRecipeIds.includes(recipe.id)}
+                                  onChange={() => toggleScalerExportRecipe(recipe.id)}
+                                  className="accent-app-accent"
+                                />
+                                <span className="truncate">{translateIngredient(recipe.name).replace(/^\d+[\s.\-_]*/, '')}</span>
+                              </label>
+                            ))}
+                          </div>
+                          <button
+                            onClick={handleScalerExport}
+                            disabled={scalerExportRecipeIds.length === 0}
+                            className="mt-2 w-full rounded-xl bg-app-accent px-3 py-2 text-[9px] font-black uppercase text-app-bg transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Export
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
 	              </div>
             </div>
 
@@ -1387,6 +1742,7 @@ const SopMain = () => {
 		                          ) : (
 			                            <div className="relative z-40">
 			                              <button
+                                    data-testid="recipe-title-button"
 			                                onClick={() => setIsRecipeMenuOpen(prev => !prev)}
 			                                className="w-full text-left flex items-center gap-2 hover:text-app-accent transition-colors pr-6 min-w-0"
 			                              >
@@ -1411,6 +1767,7 @@ const SopMain = () => {
 		                                          const cleanName = translateIngredient(r.name).replace(/^\d+[\s.\-_]*/, '');
 		                                          return (
 		                                            <button
+                                                data-testid={`recipe-option-${toTestId(r.id)}`}
 		                                              key={r.id}
 		                                              onClick={() => {
 		                                                setSelectedId(r.id);
@@ -1467,29 +1824,22 @@ const SopMain = () => {
                         {isEditMode ? (
                           <select
                             className="text-[10px] font-black text-app-accent uppercase tracking-widest bg-app-bg border border-app-border rounded px-2 py-0.5 outline-none"
-                            value={activeRecipe.dishStyle || 'production'}
+                            value={activeRecipe.portion_class || DISH_STYLE_TO_PORTION_CLASS[activeRecipe.dishStyle] || 'component'}
                             onChange={(e) => {
-                              const nextStyle = e.target.value;
-                              const syncedPortionClass = DISH_STYLE_TO_PORTION_CLASS[nextStyle];
+                              const nextPortionClass = e.target.value;
+                              const syncedDishStyle = PORTION_CLASS_TO_DISH_STYLE[nextPortionClass];
                               updateActiveRecipeLocal({
-                                dishStyle: nextStyle,
-                                ...(syncedPortionClass ? { portion_class: syncedPortionClass } : {})
+                                portion_class: nextPortionClass,
+                                ...(syncedDishStyle ? { dishStyle: syncedDishStyle } : {})
                               });
                             }}
                           >
-                            <option value="stew">Stew</option>
-                            <option value="meat_stir_fry">Meat Stir Fry</option>
-                            <option value="veg_stir_fry">Veg Stir Fry</option>
-                            <option value="curry">Curry</option>
-                            <option value="carb">Carb</option>
-                            <option value="main_carb">Main + Carb</option>
-                            <option value="side">Side</option>
-                            <option value="salad">Salad</option>
-                            <option value="marinade">Marinade</option>
-                            <option value="component">Component</option>
+                            {PORTION_CLASS_OPTIONS.map(([value, label]) => (
+                              <option key={value} value={value}>{label}</option>
+                            ))}
                           </select>
                         ) : (
-                          <span className="text-[9px] font-black text-app-accent uppercase tracking-widest">{activeRecipe.dishStyle || 'Production'}</span>
+                          <span className="text-[9px] font-black text-app-accent uppercase tracking-widest">{PORTION_CLASS_LABELS[activeRecipe.portion_class || DISH_STYLE_TO_PORTION_CLASS[activeRecipe.dishStyle] || 'component'] || 'Component'}</span>
                         )}
                         
                         {/* YIELD CONTRACT METADATA HIDDEN (V3.1) */}
@@ -1536,6 +1886,7 @@ const SopMain = () => {
 	                      </label>
 	                      <div className="flex items-center justify-center gap-1.5 min-h-[30px]">
                         <input
+                          data-testid="scaler-target-input"
                           type="number"
                           step={portionMode ? "1" : "0.5"}
                           min="0"
@@ -1589,7 +1940,7 @@ const SopMain = () => {
                             </div>
                           )}
                           </div>
-                          <div className="flex items-baseline gap-1 text-[11px] font-black uppercase text-app-text min-h-[12px] whitespace-nowrap leading-none">
+                          <div data-testid="scaler-total-weight" className="flex items-baseline gap-1 text-[11px] font-black uppercase text-app-text min-h-[12px] whitespace-nowrap leading-none">
                             <span className="shrink-0">TOTAL WEIGHT:</span>
                             <span className="tabular-nums">{totalEdibleWeightFormatted.v}</span>
                             <span className="text-app-accent">{totalEdibleWeightFormatted.u}</span>
@@ -1746,6 +2097,7 @@ const SopMain = () => {
 
                             return (
                               <div
+                                data-testid={`ingredient-row-${toTestId(ing.sku || ing.name)}`}
                                 key={idx}
                                 onClick={() => {
                                   if (!isMain || isEditing) return;
@@ -1798,7 +2150,7 @@ const SopMain = () => {
                                           placeholder="ADD SKU/NOTE"
                                         />
                                         <select
-                                          className={`w-full bg-app-bg border border-app-accent/10 outline-none text-[8px] text-app-muted uppercase font-medium mt-1 rounded px-1 py-0.5 transition-all focus:border-app-accent`}
+                                          className={`w-full bg-app-bg border border-app-accent/10 outline-none text-[9px] text-app-muted uppercase font-medium mt-1 rounded px-1.5 py-1 transition-all focus:border-app-accent`}
                                           value={linkedRecipeId || ''}
                                           onChange={(e) => updateIngredientLink(idx, e.target.value)}
                                           onClick={(e) => e.stopPropagation()}
@@ -1834,9 +2186,13 @@ const SopMain = () => {
                                         onChange={(e) => updateIngredientLocal(idx, { qty: parseFloat(e.target.value) || 0 })}
                                         placeholder="0"
                                       />
-                                      <span className="min-w-[34px] text-left text-[10px] font-black uppercase tracking-tight text-app-muted">
-                                        {ing.unit || 'unit'}
-                                      </span>
+                                      <input
+                                        type="text"
+                                        className="w-14 sm:w-16 bg-app-bg border border-app-accent/30 text-app-muted font-black text-left px-2 py-1 rounded outline-none focus:border-app-accent transition-all uppercase tracking-tight"
+                                        value={ing.unit || ''}
+                                        onChange={(e) => updateIngredientLocal(idx, { unit: e.target.value })}
+                                        placeholder="unit"
+                                      />
                                       {/* is_process toggle hidden in V3.1 */}
 
                                     </div>
@@ -1850,7 +2206,7 @@ const SopMain = () => {
                                             </span>
                                             <span className="text-[7px] text-app-muted font-black uppercase tracking-tighter">BASE</span>
                                           </div>
-                                          <div className="flex items-baseline gap-0.5">
+                                          <div data-testid={`ingredient-qty-${toTestId(ing.sku || ing.name)}`} className="flex items-baseline gap-0.5">
                                             <span className={`text-[15px] font-black tabular-nums ${isChecked ? 'text-app-muted' : 'text-app-accent'}`}>
                                               {portionDisplay ? portionDisplay.v : formatDisplay(scaledVal, ing.unit).v}
                                             </span>
@@ -1860,7 +2216,7 @@ const SopMain = () => {
                                           </div>
                                         </>
                                       ) : (
-                                        <div className="flex items-baseline gap-0.5">
+                                        <div data-testid={`ingredient-qty-${toTestId(ing.sku || ing.name)}`} className="flex items-baseline gap-0.5">
                                           <span className={`text-[15px] font-black tabular-nums ${isChecked ? 'text-app-muted' : 'text-app-text'}`}>
                                             {ing.qty}
                                           </span>
@@ -2180,9 +2536,9 @@ const SopMain = () => {
                         <React.Fragment key={cat}>
                           <tr className="bg-app-bg"><td colSpan="2" className="px-6 py-2 border-y border-app-border"><span className="text-[10px] font-bold uppercase text-app-muted tracking-widest flex items-center gap-2"><Tag size={10} /> {translateIngredient(cat)}</span></td></tr>
                           {items.map((item, i) => (
-                            <tr key={i} className="hover:bg-app-bg transition-colors h-[64px]">
+                            <tr data-testid={`market-row-${toTestId(item.name)}`} key={i} className="hover:bg-app-bg transition-colors h-[64px]">
                               <td className="px-6 py-4 font-medium text-[15px] text-app-text truncate">{translateIngredient(item.name)}</td>
-                              <td className="px-6 py-4 text-right whitespace-nowrap overflow-hidden">
+                              <td data-testid={`market-qty-${toTestId(item.name)}`} className="px-6 py-4 text-right whitespace-nowrap overflow-hidden">
                                 <span className="font-bold text-2xl tabular-nums text-app-accent">
                                   {formatDisplay(item.qty, item.unit).v}
                                 </span>

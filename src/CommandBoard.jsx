@@ -1044,12 +1044,12 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                                         const boxKey = `${r.id}-weekly-box`;
                                         const isEditingBox = editingBoxKey === boxKey;
                                         return (
-                                            <div key={r.id} className="recipe-box hover:border-blue-500/30 transition-all">
+                                            <div data-testid={`board-card-weekly-${r.id}`} key={r.id} className="recipe-box hover:border-blue-500/30 transition-all">
                                                 <div className="recipe-header">
                                                     <div className="flex min-w-0 items-center gap-2">
                                                         <span className="recipe-name text-blue-400">{translateIngredient(r.dish_name)}</span>
                                                         {getScheduleProfile(r) === 'high_volume' && (
-                                                            <span className="recipe-scale-flag"><ArrowUp size={11} /> Large</span>
+                                                            <span data-testid={`board-scale-flag-${r.id}`} className="recipe-scale-flag"><ArrowUp size={11} /> Large</span>
                                                         )}
                                                     </div>
                                                     <div className="flex items-center gap-2">
@@ -1092,12 +1092,12 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                                         const boxKey = `${r.id}-daily-box`;
                                         const isEditingBox = editingBoxKey === boxKey;
                                         return (
-                                            <div key={r.id} className="recipe-box active-box border-amber-500/20">
+                                            <div data-testid={`board-card-daily-${r.id}`} key={r.id} className="recipe-box active-box border-amber-500/20">
                                                 <div className="recipe-header">
                                                     <div className="flex min-w-0 items-center gap-2">
                                                         <span className="recipe-name text-amber-500">{translateIngredient(r.dish_name)}</span>
                                                         {getScheduleProfile(r) === 'high_volume' && (
-                                                            <span className="recipe-scale-flag"><ArrowUp size={11} /> Large</span>
+                                                            <span data-testid={`board-scale-flag-${r.id}`} className="recipe-scale-flag"><ArrowUp size={11} /> Large</span>
                                                         )}
                                                     </div>
                                                     <div className="flex items-center gap-2">
@@ -1145,12 +1145,12 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                                         const boxKey = `${r.id}-service-box`;
                                         const isEditingBox = editingBoxKey === boxKey;
                                         return (
-                                            <div key={r.id} className="recipe-box hover:border-emerald-500/30 transition-all">
+                                            <div data-testid={`board-card-service-${r.id}`} key={r.id} className="recipe-box hover:border-emerald-500/30 transition-all">
                                                 <div className="recipe-header">
                                                     <div className="flex min-w-0 items-center gap-2">
                                                         <span className="recipe-name text-emerald-500">{translateIngredient(r.dish_name)}</span>
                                                         {getScheduleProfile(r) === 'high_volume' && (
-                                                            <span className="recipe-scale-flag"><ArrowUp size={11} /> Large</span>
+                                                            <span data-testid={`board-scale-flag-${r.id}`} className="recipe-scale-flag"><ArrowUp size={11} /> Large</span>
                                                         )}
                                                     </div>
                                                     <div className="flex items-center gap-2">
