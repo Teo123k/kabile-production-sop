@@ -117,6 +117,18 @@ const PORTION_CLASS_OPTIONS = [
   ['component', 'Component']
 ];
 const PORTION_CLASS_LABELS = Object.fromEntries(PORTION_CLASS_OPTIONS);
+const KATSU_CURRY_SYSTEM_IDS = new Set([
+  'chicken-katsu-for-curry',
+  'curry-vege-base',
+  'curry-roux',
+  'katsu-curry-sauce'
+]);
+const KATSU_CURRY_SYSTEM_ORDER = {
+  'chicken-katsu-for-curry': 0,
+  'curry-vege-base': 1,
+  'curry-roux': 2,
+  'katsu-curry-sauce': 3
+};
 
 
 const SopMain = () => {
@@ -622,6 +634,11 @@ const SopMain = () => {
     if (intent.mode === 'batch') {
       targetGrams = getBatchTargetGrams(activeRecipe, intent.val);
     } else if (intent.mode === 'portion') {
+      const yieldUnit = String(activeRecipe.yieldUnit || activeRecipe.yield_unit || '').toLowerCase().trim();
+      const savedBaseYield = Number(activeRecipe.baseYield ?? activeRecipe.base_yield ?? 0);
+      if (intent.sourceDefault && savedBaseYield > 0 && /^portions?$/.test(yieldUnit)) {
+        return intent.val / Math.max(0.001, savedBaseYield);
+      }
       const portionWeight = getRecipePortionWeight(activeRecipe);
       if (!portionWeight) return 1.0;
       targetGrams = intent.val * portionWeight;
@@ -670,6 +687,7 @@ const SopMain = () => {
         style === 'prep' ||
         r.id === 'japanese-curry-roux';
       const groupLabel =
+        KATSU_CURRY_SYSTEM_IDS.has(r.id) ? 'Katsu Curry System' :
         portionClass === 'carb' ? 'Carb Base Recipes' :
           portionClass === 'main_carb' ? 'Main + Carb Dishes' :
             portionClass === 'salad' ? 'Salads' :
@@ -684,8 +702,18 @@ const SopMain = () => {
       return acc;
     }, {});
 
-    const order = ['Foundational Prep (Tier 1)', 'Carb Base Recipes', 'Marinades & Pre-Prep', 'Finishing Sauces', 'Main + Carb Dishes', 'Main Dishes', 'Salads', 'Sides & Condiments'];
-    return Object.entries(groups).sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]));
+    const order = ['Katsu Curry System', 'Foundational Prep (Tier 1)', 'Carb Base Recipes', 'Marinades & Pre-Prep', 'Finishing Sauces', 'Main + Carb Dishes', 'Main Dishes', 'Salads', 'Sides & Condiments'];
+    return Object.entries(groups)
+      .map(([label, items]) => [
+        label,
+        [...items].sort((a, b) => {
+          if (label === 'Katsu Curry System') {
+            return (KATSU_CURRY_SYSTEM_ORDER[a.id] ?? 99) - (KATSU_CURRY_SYSTEM_ORDER[b.id] ?? 99);
+          }
+          return a.name.localeCompare(b.name);
+        })
+      ])
+      .sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]));
   }, [filteredRecipesList]);
 
   const standardBatchYield = useMemo(() => {
@@ -859,6 +887,15 @@ const SopMain = () => {
     if (!recipe) return { val: 0, mode: portionMode ? 'portion' : 'batch' };
 
     if (portionMode) {
+      const yieldUnit = String(recipe.yieldUnit || recipe.yield_unit || '').toLowerCase().trim();
+      const savedBaseYield = Number(recipe.baseYield ?? recipe.base_yield ?? 0);
+      if (savedBaseYield > 0 && /^portions?$/.test(yieldUnit)) {
+        return {
+          val: savedBaseYield,
+          mode: 'portion',
+          sourceDefault: true
+        };
+      }
       const baselineGrams = getRecipeBaselineGrams(recipe, false, coreSettings);
       const portionWeight = getRecipePortionWeight(recipe);
       if (!portionWeight) return { val: 0, mode: 'portion' };
@@ -872,19 +909,28 @@ const SopMain = () => {
   }, [portionMode, coreSettings, recipes, getRecipePortionWeight]);
 
   const handleDefaultAll = useCallback(() => {
+    if (portionMode) {
+      const reset = {};
+      recipes.forEach(r => {
+        reset[r.id] = getDefaultIntentForRecipe(r);
+      });
+      setPlanIntent(reset);
+      setMenuMix({});
+      return;
+    }
+
     setPlanIntent({});
     setMenuMix({});
-  }, [setPlanIntent, setMenuMix]);
+  }, [portionMode, recipes, getDefaultIntentForRecipe, setPlanIntent, setMenuMix]);
 
   const handleDefaultSelected = useCallback(() => {
     if (!activeRecipe?.id) return;
 
     if (portionMode) {
-      setPlanIntent(prev => {
-        const next = { ...prev };
-        delete next[activeRecipe.id];
-        return next;
-      });
+      setPlanIntent(prev => ({
+        ...prev,
+        [activeRecipe.id]: getDefaultIntentForRecipe(activeRecipe)
+      }));
       return;
     }
 
