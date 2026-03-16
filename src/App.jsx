@@ -34,6 +34,7 @@ import {
   Undo2,
   Pencil,
   RotateCcw,
+  Maximize2,
   Timer,
   Link2,
   AlertTriangle
@@ -201,6 +202,11 @@ const SopMain = () => {
   const [view, setView] = useState('scaler');
   const [lastDeletedIngredient, setLastDeletedIngredient] = useState(null);
   const [pendingIngredientCategory, setPendingIngredientCategory] = useState('PROTEIN');
+  const [editingCategoryHeader, setEditingCategoryHeader] = useState(null);
+  const [editingCategoryValue, setEditingCategoryValue] = useState('');
+  const [showRecipeNotes, setShowRecipeNotes] = useState(false);
+  const [expandedNoteIndex, setExpandedNoteIndex] = useState(null);
+  const [lastDeletedNote, setLastDeletedNote] = useState(null);
 
   // HEURISTIC: Calculate the actual weight of the recipe in the DB
   // We use this as the scaling anchor in portion mode to fix messy metadata.
@@ -451,6 +457,7 @@ const SopMain = () => {
               : (Array.isArray(r.ingredients) ? r.ingredients : []),
             method: richMethod.length > 0 ? richMethod : ['Standard preparation.'],
             bulkMethod: Array.isArray(row.bulk_method) && row.bulk_method.length > 0 ? row.bulk_method : (strategy.tips ? [strategy.tips] : []),
+            scalingTips: (row.scaling_tips && typeof row.scaling_tips === 'object' ? row.scaling_tips : (r.scalingTips || {})),
             // Prioritize the deep strategy narrative, then standard note
             note: strategy.note || row.note || r.note || 'No operational notes provided.',
             dishStyle: row.dish_style || r.dishStyle || r.style || 'stewed',
@@ -859,7 +866,8 @@ const SopMain = () => {
       const { error } = await supabase.from('sop_recipes').update({
         ingredients: activeRecipe.ingredients,
         method: activeRecipe.method,
-        bulk_method: activeRecipe.bulk_method,
+        bulk_method: activeRecipe.bulkMethod || activeRecipe.bulk_method || [],
+        scaling_tips: activeRecipe.scalingTips || {},
         show_on_board: activeRecipe.show_on_board,
         cuisine: activeRecipe.cuisine,
         occasion: activeRecipe.occasion,
@@ -895,6 +903,67 @@ const SopMain = () => {
     const nextSku = linkedRecipeId || '';
     updateIngredientLocal(idx, { sku: nextSku });
   };
+
+  const updateRecipeScalingTipsLocal = useCallback((updates) => {
+    updateActiveRecipeLocal({
+      scalingTips: {
+        ...(activeRecipe?.scalingTips || {}),
+        ...updates
+      }
+    });
+  }, [activeRecipe?.scalingTips]);
+
+  const updateRecipeMethodStep = useCallback((idx, value, bulk = false) => {
+    const source = bulk ? (activeRecipe?.bulkMethod || []) : (activeRecipe?.method || []);
+    const next = [...source];
+    next[idx] = value;
+    updateActiveRecipeLocal(bulk ? { bulkMethod: next } : { method: next });
+  }, [activeRecipe?.bulkMethod, activeRecipe?.method]);
+
+  const addRecipeMethodStep = useCallback((bulk = false) => {
+    const source = bulk ? (activeRecipe?.bulkMethod || []) : (activeRecipe?.method || []);
+    const next = [...source, ''];
+    updateActiveRecipeLocal(bulk ? { bulkMethod: next } : { method: next });
+  }, [activeRecipe?.bulkMethod, activeRecipe?.method]);
+
+  const removeRecipeMethodStep = useCallback((idx, bulk = false) => {
+    const source = bulk ? (activeRecipe?.bulkMethod || []) : (activeRecipe?.method || []);
+    const next = source.filter((_, i) => i !== idx);
+    updateActiveRecipeLocal(bulk ? { bulkMethod: next } : { method: next });
+  }, [activeRecipe?.bulkMethod, activeRecipe?.method]);
+
+  const recipeNotes = useMemo(() => {
+    const notes = activeRecipe?.scalingTips?.notes;
+    if (Array.isArray(notes)) return notes;
+    if (activeRecipe?.note && activeRecipe.note !== 'No operational notes provided.') {
+      return [{ title: 'Chef Note', body: activeRecipe.note }];
+    }
+    return [];
+  }, [activeRecipe?.scalingTips?.notes, activeRecipe?.note]);
+
+  const updateRecipeNotes = useCallback((notes) => {
+    updateRecipeScalingTipsLocal({ notes: notes.slice(0, 3) });
+  }, [updateRecipeScalingTipsLocal]);
+
+  const handleDeleteRecipeNote = useCallback((noteIdx) => {
+    const deleted = recipeNotes[noteIdx];
+    if (!deleted) return;
+    setLastDeletedNote({ note: deleted, index: noteIdx });
+    updateRecipeNotes(recipeNotes.filter((_, i) => i !== noteIdx));
+    if (expandedNoteIndex === noteIdx) {
+      setExpandedNoteIndex(null);
+    } else if (expandedNoteIndex > noteIdx) {
+      setExpandedNoteIndex(expandedNoteIndex - 1);
+    }
+  }, [recipeNotes, updateRecipeNotes, expandedNoteIndex]);
+
+  const handleRestoreRecipeNote = useCallback(() => {
+    if (!lastDeletedNote) return;
+    const next = [...recipeNotes];
+    next.splice(Math.min(lastDeletedNote.index, next.length), 0, lastDeletedNote.note);
+    updateRecipeNotes(next.slice(0, 3));
+    setLastDeletedNote(null);
+  }, [lastDeletedNote, recipeNotes, updateRecipeNotes]);
 
   const normalizeIngredientCategory = useCallback((category) => {
     const nextCategory = String(category || 'OTHER').trim().toUpperCase();
@@ -956,6 +1025,29 @@ const SopMain = () => {
     setEditingIngId(insertAt);
     setLastDeletedIngredient(null);
   };
+
+  const handleRenameIngredientCategory = useCallback((currentCategory, nextCategory) => {
+    if (!activeRecipe?.ingredients) return;
+    const currentNormalized = normalizeIngredientCategory(currentCategory);
+    const nextPersisted = persistIngredientCategory(nextCategory);
+    const nextNormalized = normalizeIngredientCategory(nextCategory);
+    if (!nextPersisted) return;
+
+    const updatedIngredients = (activeRecipe.ingredients || []).map((ing) => {
+      const ingCategory = normalizeIngredientCategory(ing?.category || ing?.cat || 'OTHER');
+      if (ingCategory !== currentNormalized) return ing;
+      return {
+        ...ing,
+        category: nextPersisted,
+        cat: nextPersisted,
+        unit: LIQUID_LIKE_CATEGORIES.has(nextNormalized)
+          ? (/^(g|kg)$/i.test(String(ing?.unit || '')) ? 'ml' : (ing?.unit || 'ml'))
+          : (String(ing?.unit || '').trim() || 'g')
+      };
+    });
+
+    updateActiveRecipeLocal({ ingredients: updatedIngredients });
+  }, [activeRecipe?.ingredients, normalizeIngredientCategory, persistIngredientCategory]);
 
   const handleUndoDeleteIngredient = () => {
     if (!lastDeletedIngredient || !activeRecipe || lastDeletedIngredient.recipeId !== activeRecipe.id) return;
@@ -1027,6 +1119,8 @@ const SopMain = () => {
   const handleEnterEditMode = useCallback(() => {
     handleDefaultAll();
     setEditingIngId(null);
+    setEditingCategoryHeader(null);
+    setEditingCategoryValue('');
     setCheckedItems({});
     setLastDeletedIngredient(null);
     setShowDeleted(false);
@@ -1063,6 +1157,18 @@ const SopMain = () => {
       .map((category) => [category, grouped[category] || []]);
   }, [activeRecipe?.ingredients, normalizeIngredientCategory]);
 
+  useEffect(() => {
+    if (!isEditMode) {
+      setEditingCategoryHeader(null);
+      setEditingCategoryValue('');
+    }
+  }, [isEditMode, activeRecipe?.id]);
+
+  useEffect(() => {
+    setExpandedNoteIndex(null);
+    setLastDeletedNote(null);
+  }, [activeRecipe?.id]);
+
   // AUTO-SAVE LOGIC: Syncs to Supabase when active recipe changes
   useEffect(() => {
     if (!activeRecipe || loading) return;
@@ -1075,6 +1181,9 @@ const SopMain = () => {
           .from('sop_recipes')
           .update({
             ingredients: activeRecipe.ingredients,
+            method: activeRecipe.method,
+            bulk_method: activeRecipe.bulkMethod || activeRecipe.bulk_method,
+            scaling_tips: activeRecipe.scalingTips || {},
             cuisine: activeRecipe.cuisine,
             occasion: activeRecipe.occasion,
             show_on_board: activeRecipe.show_on_board,
@@ -1087,7 +1196,7 @@ const SopMain = () => {
     }, 2000); // 2 second debounce
 
     return () => clearTimeout(handler);
-  }, [activeRecipe?.ingredients, activeRecipe?.cuisine, activeRecipe?.occasion, activeRecipe?.show_on_board, activeRecipe?.is_deleted]);
+  }, [activeRecipe?.ingredients, activeRecipe?.method, activeRecipe?.bulkMethod, activeRecipe?.scalingTips, activeRecipe?.cuisine, activeRecipe?.occasion, activeRecipe?.show_on_board, activeRecipe?.is_deleted]);
 
   const applyMultiplier = (m) => {
     const activeSeedIds = Object.keys(planIntent);
@@ -2157,7 +2266,7 @@ const SopMain = () => {
                         </span>
                       )}
                     </h4>
-                    <div className="flex gap-6 text-[10px] font-black uppercase text-app-muted tracking-widest">
+                    <div className="flex gap-3 text-[10px] font-black uppercase text-app-muted tracking-widest">
                       {isEditMode && (
                         <div className="flex items-center gap-2">
                           <input
@@ -2176,20 +2285,200 @@ const SopMain = () => {
                           </button>
                         </div>
                       )}
-                      <span className="flex items-center gap-1.5"><Package size={12} className="text-app-accent" /> P: {activeRecipe.prepTime || 'N/A'}</span>
-                      <span className="flex items-center gap-1.5"><Zap size={12} className="text-app-accent" /> C: {activeRecipe.cookTime || 'N/A'}</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowRecipeNotes(prev => !prev)}
+                        className="flex items-center gap-1.5 rounded-md border border-app-accent/20 bg-app-bg px-2 py-1 text-[9px] font-black uppercase tracking-widest text-app-accent hover:bg-app-accent/10 transition-colors"
+                      >
+                        <Info size={12} />
+                        Note +
+                      </button>
                     </div>
                   </div>
+
+                  {showRecipeNotes && (
+                    <div className={`mx-4 mt-3 rounded-xl border border-app-accent/20 bg-app-bg/95 p-4 shadow-2xl shadow-black/30 relative z-20 ${expandedNoteIndex !== null ? 'min-h-[420px]' : ''}`}>
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-app-accent">
+                          <Info size={14} />
+                          Recipe Notes
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {recipeNotes.length < 3 && (
+                            <button
+                              type="button"
+                              onClick={() => updateRecipeNotes([...recipeNotes, { title: '', body: '' }])}
+                              className="rounded-md border border-app-accent/20 bg-app-accent/10 px-2 py-1 text-[9px] font-black uppercase tracking-widest text-app-accent hover:bg-app-accent hover:text-app-bg transition-colors"
+                            >
+                              + Add Note
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setShowRecipeNotes(false)}
+                            className="rounded-md border border-app-border bg-app-surface px-2 py-1 text-[9px] font-black uppercase tracking-widest text-app-muted hover:text-app-text transition-colors"
+                          >
+                            Close
+                          </button>
+                        </div>
+                      </div>
+
+                      {lastDeletedNote && (
+                        <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2">
+                          <span className="text-[10px] font-bold text-amber-300">
+                            Note removed. Restore it if that was accidental.
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handleRestoreRecipeNote}
+                            className="rounded-md border border-amber-500/30 bg-app-bg px-2 py-1 text-[9px] font-black uppercase tracking-widest text-amber-300 hover:bg-amber-500/20 transition-colors"
+                          >
+                            Restore
+                          </button>
+                        </div>
+                      )}
+
+                      <div className={`${expandedNoteIndex !== null ? 'hidden' : 'grid grid-cols-1 xl:grid-cols-3 gap-3'}`}>
+                        {recipeNotes.map((noteItem, noteIdx) => (
+                          <div key={noteIdx} className="rounded-xl border border-app-border bg-app-surface p-3 shadow-inner">
+                            <div className="mb-2 flex items-center justify-between gap-2">
+                              <input
+                                type="text"
+                                value={noteItem.title || ''}
+                                onChange={(e) => {
+                                  const next = [...recipeNotes];
+                                  next[noteIdx] = { ...next[noteIdx], title: e.target.value };
+                                  updateRecipeNotes(next);
+                                }}
+                                placeholder="Note title"
+                                className="w-full bg-transparent text-[11px] font-black text-app-accent outline-none border-none"
+                              />
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedNoteIndex(expandedNoteIndex === noteIdx ? null : noteIdx)}
+                                  className="rounded-md border border-app-accent/20 bg-app-accent/10 px-2 py-1 text-[9px] font-black uppercase text-app-accent hover:bg-app-accent/20 transition-colors"
+                                  title="Expand note"
+                                >
+                                  <Maximize2 size={11} />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteRecipeNote(noteIdx)}
+                                  className="rounded-md border border-red-500/20 bg-red-500/10 px-2 py-1 text-[9px] font-black uppercase text-red-300 hover:bg-red-500/20 transition-colors"
+                                >
+                                  X
+                                </button>
+                              </div>
+                            </div>
+                            <textarea
+                              rows={6}
+                              value={noteItem.body || ''}
+                              onChange={(e) => {
+                                const next = [...recipeNotes];
+                                next[noteIdx] = { ...next[noteIdx], body: e.target.value };
+                                updateRecipeNotes(next);
+                              }}
+                              placeholder="Write a clean kitchen note..."
+                              className="w-full resize-none rounded-lg border border-app-border bg-app-bg px-3 py-2 text-[11px] leading-relaxed text-app-text outline-none focus:ring-1 focus:ring-app-accent"
+                            />
+                          </div>
+                        ))}
+                        {recipeNotes.length === 0 && (
+                          <div className="rounded-xl border border-dashed border-app-border bg-app-surface/50 p-4 text-[11px] text-app-muted">
+                            No notes yet. Use `+ Add Note` to add up to 3 quick kitchen notes.
+                          </div>
+                        )}
+                      </div>
+
+                      {expandedNoteIndex !== null && recipeNotes[expandedNoteIndex] && (
+                        <div className="rounded-xl border border-app-accent/20 bg-app-surface p-4 shadow-inner">
+                          <div className="mb-3 flex items-center justify-between gap-3 border-b border-app-border/50 pb-2">
+                            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-app-accent">
+                              <Maximize2 size={14} />
+                              Expanded Recipe Note
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setExpandedNoteIndex(null)}
+                              className="rounded-md border border-app-border bg-app-bg px-2 py-1 text-[9px] font-black uppercase tracking-widest text-app-muted hover:text-app-text transition-colors"
+                              title="Return to compact note view"
+                            >
+                              <Maximize2 size={11} className="rotate-180" />
+                            </button>
+                          </div>
+                          <div className="rounded-xl border border-app-border bg-app-bg p-4">
+                            <input
+                              type="text"
+                              value={recipeNotes[expandedNoteIndex]?.title || ''}
+                              onChange={(e) => {
+                                const next = [...recipeNotes];
+                                next[expandedNoteIndex] = { ...next[expandedNoteIndex], title: e.target.value };
+                                updateRecipeNotes(next);
+                              }}
+                              placeholder="Note title"
+                              className="mb-3 w-full bg-transparent text-sm font-black text-app-accent outline-none border-none"
+                            />
+                            <textarea
+                              rows={11}
+                              value={recipeNotes[expandedNoteIndex]?.body || ''}
+                              onChange={(e) => {
+                                const next = [...recipeNotes];
+                                next[expandedNoteIndex] = { ...next[expandedNoteIndex], body: e.target.value };
+                                updateRecipeNotes(next);
+                              }}
+                              placeholder="Write a clean kitchen note..."
+                              className="w-full resize-none rounded-lg border border-app-border bg-app-surface px-4 py-3 text-[12px] leading-relaxed text-app-text outline-none focus:ring-1 focus:ring-app-accent"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* WRAPPED GRID CONTAINER */}
                   <div className={`grid grid-cols-1 p-4 ${isEditMode ? 'md:grid-cols-2 xl:grid-cols-3 gap-4' : 'md:grid-cols-2 lg:grid-cols-4 gap-6'}`}>
                     {ingredientCategoryEntries.map(([category, items]) => (
                       <div key={category} className={`${isEditMode ? 'space-y-1.5' : 'space-y-2'}`}>
                         <div className="flex items-center justify-between gap-2 mb-1">
-                          <h5 className={`text-[10px] font-black uppercase px-2 py-1 rounded inline-block tracking-tighter border ${category === 'WET / LIQUID' ? 'bg-app-accent/20 border-app-accent text-app-text font-black scale-105 transform origin-left' : 'bg-app-accent/5 border-app-accent/10 text-app-accent'}`}>
-                            {category}
-                            {category === 'WET / LIQUID' && <span className="ml-2 text-[8px] font-normal opacity-70">(Mix in same container)</span>}
-                          </h5>
+                          {isEditMode && editingCategoryHeader === category ? (
+                            <input
+                              type="text"
+                              autoFocus
+                              value={editingCategoryValue}
+                              onChange={(e) => setEditingCategoryValue(e.target.value)}
+                              onBlur={() => {
+                                handleRenameIngredientCategory(category, editingCategoryValue);
+                                setEditingCategoryHeader(null);
+                                setEditingCategoryValue('');
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  handleRenameIngredientCategory(category, editingCategoryValue);
+                                  setEditingCategoryHeader(null);
+                                  setEditingCategoryValue('');
+                                }
+                                if (e.key === 'Escape') {
+                                  setEditingCategoryHeader(null);
+                                  setEditingCategoryValue('');
+                                }
+                              }}
+                              className="min-w-[140px] bg-app-bg border border-app-accent/25 text-app-accent text-[10px] font-black uppercase px-2 py-1 rounded tracking-tighter outline-none focus:ring-1 focus:ring-app-accent"
+                            />
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!isEditMode) return;
+                                setEditingCategoryHeader(category);
+                                setEditingCategoryValue(category);
+                              }}
+                              className={`text-[10px] font-black uppercase px-2 py-1 rounded inline-block tracking-tighter border text-left ${category === 'WET / LIQUID' ? 'bg-app-accent/20 border-app-accent text-app-text font-black scale-105 transform origin-left' : 'bg-app-accent/5 border-app-accent/10 text-app-accent'} ${isEditMode ? 'cursor-text' : 'cursor-default'}`}
+                            >
+                              {category}
+                              {category === 'WET / LIQUID' && <span className="ml-2 text-[8px] font-normal opacity-70">(Mix in same container)</span>}
+                            </button>
+                          )}
                           {isEditMode && (
                             <button
                               type="button"
@@ -2393,13 +2682,40 @@ const SopMain = () => {
                         <Zap size={14} />
                         {isBulkMode ? "Bulk Production Protocol" : "Standard Production Run"}
                       </h4>
+                      {isEditMode && (
+                        <button
+                          type="button"
+                          onClick={() => addRecipeMethodStep(isBulkMode)}
+                          className="rounded-md border border-app-accent/20 bg-app-accent/10 px-2 py-1 text-[9px] font-black uppercase tracking-widest text-app-accent hover:bg-app-accent hover:text-app-bg transition-colors"
+                        >
+                          + Step
+                        </button>
+                      )}
                     </div>
                     {activeRecipe?.method && Array.isArray(activeRecipe.method) && (
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-3">
                         {(isBulkMode && Array.isArray(activeRecipe.bulkMethod) ? activeRecipe.bulkMethod : activeRecipe.method).map((step, i) => (
                           <div key={i} className="flex gap-3 text-[11px] font-medium leading-relaxed text-app-text">
                             <span className="font-bold text-app-accent bg-app-accent/10 rounded-full shrink-0 w-5 h-5 flex items-center justify-center text-[10px]">{i + 1}</span>
-                            <span className="pt-0.5">{step}</span>
+                            {isEditMode ? (
+                              <div className="flex flex-1 items-start gap-2">
+                                <textarea
+                                  rows={2}
+                                  value={step}
+                                  onChange={(e) => updateRecipeMethodStep(i, e.target.value, isBulkMode)}
+                                  className="w-full resize-none rounded-lg border border-app-border bg-app-bg px-3 py-2 text-[11px] leading-relaxed text-app-text outline-none focus:ring-1 focus:ring-app-accent"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => removeRecipeMethodStep(i, isBulkMode)}
+                                  className="rounded-md border border-red-500/20 bg-red-500/10 px-2 py-1 text-[9px] font-black uppercase text-red-300 hover:bg-red-500/20 transition-colors"
+                                >
+                                  X
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="pt-0.5">{step}</span>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -2414,12 +2730,32 @@ const SopMain = () => {
                     <div className="space-y-3">
                       <div>
                         <p className="text-[8px] font-black uppercase text-app-muted mb-1">Regular</p>
-                        <p className="text-[10px] text-app-text leading-tight italic">"{activeRecipe.scalingTips?.regular || "Maintain standard ratios."}"</p>
+                        {isEditMode ? (
+                          <textarea
+                            rows={3}
+                            value={activeRecipe.scalingTips?.regular || ''}
+                            onChange={(e) => updateRecipeScalingTipsLocal({ regular: e.target.value })}
+                            className="w-full resize-none rounded-lg border border-app-border bg-app-bg px-3 py-2 text-[10px] leading-tight text-app-text outline-none focus:ring-1 focus:ring-app-accent"
+                            placeholder="Add regular scaling intel..."
+                          />
+                        ) : (
+                          <p className="text-[10px] text-app-text leading-tight italic">"{activeRecipe.scalingTips?.regular || "Maintain standard ratios."}"</p>
+                        )}
                       </div>
                       {isBulkMode && (
                         <div className="animate-in slide-in-from-right duration-500 border-l-2 border-amber-500 pl-3">
                           <p className="text-[8px] font-black uppercase text-amber-500 mb-1">Bulk Warning</p>
-                          <p className="text-[10px] font-bold text-app-text leading-tight italic">"{activeRecipe.scalingTips?.largeScale || "Monitor heat levels."}"</p>
+                          {isEditMode ? (
+                            <textarea
+                              rows={3}
+                              value={activeRecipe.scalingTips?.largeScale || ''}
+                              onChange={(e) => updateRecipeScalingTipsLocal({ largeScale: e.target.value })}
+                              className="w-full resize-none rounded-lg border border-amber-500/20 bg-app-bg px-3 py-2 text-[10px] leading-tight text-app-text outline-none focus:ring-1 focus:ring-amber-500"
+                              placeholder="Add bulk production warning..."
+                            />
+                          ) : (
+                            <p className="text-[10px] font-bold text-app-text leading-tight italic">"{activeRecipe.scalingTips?.largeScale || "Monitor heat levels."}"</p>
+                          )}
                         </div>
                       )}
                     </div>
