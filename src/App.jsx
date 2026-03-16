@@ -117,6 +117,38 @@ const PORTION_CLASS_OPTIONS = [
   ['component', 'Component']
 ];
 const PORTION_CLASS_LABELS = Object.fromEntries(PORTION_CLASS_OPTIONS);
+const FOUNDATION_PREP_IDS = new Set([
+  'magic-soy',
+  'fried-chicken-coating-system'
+]);
+const FOUNDATION_PREP_ORDER = {
+  'magic-soy': 0,
+  'fried-chicken-coating-system': 1
+};
+const FRIED_CHICKEN_COATING_IDS = new Set([
+  'sweet-spicy-sauce',
+  'extra-spicy-sauce',
+  'honey-butter',
+  'thai-spicy-sauce'
+]);
+const FRIED_CHICKEN_COATING_ORDER = {
+  'sweet-spicy-sauce': 0,
+  'extra-spicy-sauce': 1,
+  'honey-butter': 2,
+  'thai-spicy-sauce': 3
+};
+const FRIED_CHICKEN_DIP_IDS = new Set([
+  'kimchi-mayo',
+  'gochujang-mayo',
+  'blue-cheese-sauce',
+  'sriracha-mayo'
+]);
+const FRIED_CHICKEN_DIP_ORDER = {
+  'kimchi-mayo': 0,
+  'gochujang-mayo': 1,
+  'blue-cheese-sauce': 2,
+  'sriracha-mayo': 3
+};
 const KATSU_CURRY_SYSTEM_IDS = new Set([
   'chicken-katsu-for-curry',
   'curry-vege-base',
@@ -128,6 +160,37 @@ const KATSU_CURRY_SYSTEM_ORDER = {
   'curry-vege-base': 1,
   'curry-roux': 2,
   'katsu-curry-sauce': 3
+};
+const KATSU_SAUCE_IDS = new Set(['bbq-sauce']);
+const MARINADE_PREP_IDS = new Set([
+  'dakgalbi-sauce',
+  'bulgogi-sauce'
+]);
+const MAIN_MEAT_IDS = new Set([
+  'bulgogi-dish',
+  'dakgalbi-dish',
+  'korean-fried-chicken'
+]);
+const MAIN_CARB_IDS = new Set([
+  'classic-tteokbokki',
+  'japchae-magic-soy',
+  'japchae-classic',
+  'japchae-classic-sauce-2',
+  'king-tteokbokki-magic-soy'
+]);
+const MAIN_CARB_ORDER = {
+  'classic-tteokbokki': 0,
+  'japchae-magic-soy': 1,
+  'japchae-classic': 2,
+  'japchae-classic-sauce-2': 3,
+  'king-tteokbokki-magic-soy': 4
+};
+const CARB_BASE_IDS = new Set(['udon-base']);
+const SALAD_IDS = new Set(['asian-coleslaw', 'radish-pickle']);
+const KIMCHI_IDS = new Set(['kimchi-paste', 'kimchi']);
+const KIMCHI_ORDER = {
+  'kimchi-paste': 0,
+  'kimchi': 1
 };
 
 
@@ -524,8 +587,9 @@ const SopMain = () => {
     const mode = modeOverride || (portionMode ? 'portion' : 'batch');
 
     let numericVal = parseFloat(val) || 0;
-
-    // STEP 4: Snapping removed to allow decimal precision (Codex V3.5)
+    if (mode === 'portion' && numericVal > 0) {
+      numericVal = roundKitchenPortions(numericVal);
+    }
 
     setPlanIntent(prev => ({
       ...prev,
@@ -541,6 +605,14 @@ const SopMain = () => {
       setPlanIntent(prev => ({
         ...prev,
         [recipeId]: { val: 2, mode: 'portion' }
+      }));
+      return;
+    }
+
+    if (currentVal >= 2) {
+      setPlanIntent(prev => ({
+        ...prev,
+        [recipeId]: { val: roundKitchenPortions(currentVal), mode: 'portion' }
       }));
     }
   }, [planIntent]);
@@ -681,35 +753,47 @@ const SopMain = () => {
   const groupedRecipes = useMemo(() => {
     const groups = filteredRecipesList.reduce((acc, r) => {
       const portionClass = (r.portion_class || r.portionClass || '').toLowerCase();
-      const style = (r.dishStyle || r.style || 'other').toLowerCase();
-      const isFoundationPrep =
-        ['prep', 'base', 'component'].includes(portionClass) ||
-        style === 'prep' ||
-        r.id === 'japanese-curry-roux';
       const groupLabel =
+        FOUNDATION_PREP_IDS.has(r.id) ? 'Foundation Prep' :
+        FRIED_CHICKEN_COATING_IDS.has(r.id) ? 'Fried Chicken Sauce (Coating)' :
+        FRIED_CHICKEN_DIP_IDS.has(r.id) ? 'Fried Chicken (Dipping Sauce)' :
         KATSU_CURRY_SYSTEM_IDS.has(r.id) ? 'Katsu Curry System' :
-        portionClass === 'carb' ? 'Carb Base Recipes' :
-          portionClass === 'main_carb' ? 'Main + Carb Dishes' :
-            portionClass === 'salad' ? 'Salads' :
-              portionClass === 'side' ? 'Sides & Condiments' :
-                isFoundationPrep ? 'Foundational Prep (Tier 1)' :
-                  style === 'marinade' ? 'Marinades & Pre-Prep' :
-                    ['sauce', 'glaze'].includes(style) || portionClass === 'sauce' ? 'Finishing Sauces' :
-                      ['stew', 'curry', 'main', 'meat_stir_fry', 'veg_stir_fry'].includes(portionClass) || ['grilled', 'fried', 'stir_fried', 'stew', 'curry', 'main'].includes(style) ? 'Main Dishes' :
-                        'Sides & Condiments';
+        KATSU_SAUCE_IDS.has(r.id) ? 'Katsu Sauce' :
+        MARINADE_PREP_IDS.has(r.id) ? 'Marinade / Pre-Prep' :
+        MAIN_MEAT_IDS.has(r.id) ? 'Main Meat Dish' :
+        MAIN_CARB_IDS.has(r.id) ? 'Main + Carb Dish' :
+        CARB_BASE_IDS.has(r.id) || portionClass === 'carb' ? 'Carb Base Dish' :
+        SALAD_IDS.has(r.id) || portionClass === 'salad' || portionClass === 'side' ? 'Salad' :
+        KIMCHI_IDS.has(r.id) ? 'Kimchi' :
+        'Foundation Prep';
       if (!acc[groupLabel]) acc[groupLabel] = [];
       acc[groupLabel].push(r);
       return acc;
     }, {});
 
-    const order = ['Katsu Curry System', 'Foundational Prep (Tier 1)', 'Carb Base Recipes', 'Marinades & Pre-Prep', 'Finishing Sauces', 'Main + Carb Dishes', 'Main Dishes', 'Salads', 'Sides & Condiments'];
+    const order = [
+      'Foundation Prep',
+      'Fried Chicken Sauce (Coating)',
+      'Fried Chicken (Dipping Sauce)',
+      'Katsu Curry System',
+      'Katsu Sauce',
+      'Marinade / Pre-Prep',
+      'Main Meat Dish',
+      'Main + Carb Dish',
+      'Carb Base Dish',
+      'Salad',
+      'Kimchi'
+    ];
     return Object.entries(groups)
       .map(([label, items]) => [
         label,
         [...items].sort((a, b) => {
-          if (label === 'Katsu Curry System') {
-            return (KATSU_CURRY_SYSTEM_ORDER[a.id] ?? 99) - (KATSU_CURRY_SYSTEM_ORDER[b.id] ?? 99);
-          }
+          if (label === 'Foundation Prep') return (FOUNDATION_PREP_ORDER[a.id] ?? 99) - (FOUNDATION_PREP_ORDER[b.id] ?? 99);
+          if (label === 'Fried Chicken Sauce (Coating)') return (FRIED_CHICKEN_COATING_ORDER[a.id] ?? 99) - (FRIED_CHICKEN_COATING_ORDER[b.id] ?? 99);
+          if (label === 'Fried Chicken (Dipping Sauce)') return (FRIED_CHICKEN_DIP_ORDER[a.id] ?? 99) - (FRIED_CHICKEN_DIP_ORDER[b.id] ?? 99);
+          if (label === 'Katsu Curry System') return (KATSU_CURRY_SYSTEM_ORDER[a.id] ?? 99) - (KATSU_CURRY_SYSTEM_ORDER[b.id] ?? 99);
+          if (label === 'Main + Carb Dish') return (MAIN_CARB_ORDER[a.id] ?? 99) - (MAIN_CARB_ORDER[b.id] ?? 99);
+          if (label === 'Kimchi') return (KIMCHI_ORDER[a.id] ?? 99) - (KIMCHI_ORDER[b.id] ?? 99);
           return a.name.localeCompare(b.name);
         })
       ])
@@ -738,7 +822,7 @@ const SopMain = () => {
     const newYield = activeRecipe.baseYield * factor;
 
     const finalVal = portionMode
-      ? Number((newYield / (getPortionSize(activeRecipe) || 1)).toFixed(1))
+      ? roundKitchenPortions(newYield / (getPortionSize(activeRecipe) || 1))
       : Number(newYield.toFixed(2));
 
     const mode = portionMode ? 'portion' : 'weight';
@@ -813,7 +897,7 @@ const SopMain = () => {
   };
 
   const normalizeIngredientCategory = useCallback((category) => {
-    const nextCategory = (category || 'OTHER').toUpperCase();
+    const nextCategory = String(category || 'OTHER').trim().toUpperCase();
     if (nextCategory === 'WET' || nextCategory === 'LIQUID') return 'WET / LIQUID';
     return nextCategory;
   }, []);
@@ -821,7 +905,7 @@ const SopMain = () => {
   const persistIngredientCategory = useCallback((category) => {
     const normalized = normalizeIngredientCategory(category);
     if (normalized === 'WET / LIQUID') return 'wet';
-    return normalized.toLowerCase();
+    return String(category || 'other').trim() || 'other';
   }, [normalizeIngredientCategory]);
 
   const handleDeleteIngredient = (idx) => {
@@ -891,7 +975,7 @@ const SopMain = () => {
       const savedBaseYield = Number(recipe.baseYield ?? recipe.base_yield ?? 0);
       if (savedBaseYield > 0 && /^portions?$/.test(yieldUnit)) {
         return {
-          val: savedBaseYield,
+          val: roundKitchenPortions(savedBaseYield),
           mode: 'portion',
           sourceDefault: true
         };
@@ -900,7 +984,7 @@ const SopMain = () => {
       const portionWeight = getRecipePortionWeight(recipe);
       if (!portionWeight) return { val: 0, mode: 'portion' };
       return {
-        val: Number((baselineGrams / portionWeight).toFixed(1)),
+        val: roundKitchenPortions(baselineGrams / portionWeight),
         mode: 'portion'
       };
     }
@@ -2076,17 +2160,13 @@ const SopMain = () => {
                     <div className="flex gap-6 text-[10px] font-black uppercase text-app-muted tracking-widest">
                       {isEditMode && (
                         <div className="flex items-center gap-2">
-                          <select
-                            className="rounded-md border border-app-accent/25 bg-app-bg px-2 py-1 text-[9px] font-black uppercase tracking-widest text-app-accent outline-none focus:ring-1 focus:ring-app-accent"
+                          <input
+                            type="text"
+                            className="w-32 rounded-md border border-app-accent/25 bg-app-bg px-2 py-1 text-[9px] font-black uppercase tracking-widest text-app-accent outline-none focus:ring-1 focus:ring-app-accent placeholder:text-app-muted"
                             value={pendingIngredientCategory}
                             onChange={(e) => setPendingIngredientCategory(e.target.value)}
-                          >
-                            {EDIT_CATEGORY_ORDER.map((category) => (
-                              <option key={category} value={category}>
-                                {category}
-                              </option>
-                            ))}
-                          </select>
+                            placeholder="CATEGORY"
+                          />
                           <button
                             type="button"
                             onClick={() => handleAddIngredient(pendingIngredientCategory)}
@@ -2194,6 +2274,13 @@ const SopMain = () => {
                                           onChange={(e) => updateIngredientLocal(idx, { sku: e.target.value })}
                                           onClick={(e) => e.stopPropagation()}
                                           placeholder="ADD SKU/NOTE"
+                                        />
+                                        <input
+                                          className={`w-full bg-app-bg border border-app-accent/10 outline-none text-[9px] text-app-accent uppercase font-bold mt-1 rounded px-1 transition-all focus:border-app-accent`}
+                                          value={normalizeIngredientCategory(ing.category || ing.cat || 'OTHER')}
+                                          onChange={(e) => updateIngredientLocal(idx, { category: persistIngredientCategory(e.target.value), cat: persistIngredientCategory(e.target.value) })}
+                                          onClick={(e) => e.stopPropagation()}
+                                          placeholder="CATEGORY"
                                         />
                                         <select
                                           className={`w-full bg-app-bg border border-app-accent/10 outline-none text-[9px] text-app-muted uppercase font-medium mt-1 rounded px-1.5 py-1 transition-all focus:border-app-accent`}

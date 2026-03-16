@@ -38,6 +38,17 @@ async function readScalerTargetValue(page) {
   return Number(raw);
 }
 
+function parseDisplayedQuantity(text) {
+  const normalized = String(text).replace(/\s+/g, ' ').trim().toLowerCase();
+  const match = normalized.match(/(\d+(?:\.\d+)?)(?:\s*)(kg|g|ml|l)\b/);
+  if (!match) return null;
+  const value = Number(match[1]);
+  const unit = match[2];
+  if (unit === 'kg') return value * 1000;
+  if (unit === 'l') return value * 1000;
+  return value;
+}
+
 test.describe('Scaler calculation flow', () => {
   test('original recipe quantity displays correctly', async ({ page }) => {
     await waitForScalerReady(page);
@@ -120,5 +131,37 @@ test.describe('Scaler calculation flow', () => {
     });
 
     expect(mismatches).toEqual([]);
+  });
+
+  test('halving Kimchi portion target halves the displayed ingredient and total weight quantities', async ({ page }) => {
+    await waitForScalerReady(page);
+    await page.getByTestId('mode-portion').click();
+    await selectRecipe(page, 'kimchi');
+
+    const defaultTarget = await readScalerTargetValue(page);
+    const halfTarget = defaultTarget / 2;
+
+    const cabbageOriginalText = await page.getByTestId('ingredient-qty-cabbage').innerText();
+    const totalOriginalText = await page.getByTestId('scaler-total-weight').innerText();
+
+    const cabbageOriginal = parseDisplayedQuantity(cabbageOriginalText);
+    const totalOriginal = parseDisplayedQuantity(totalOriginalText);
+
+    expect(cabbageOriginal).not.toBeNull();
+    expect(totalOriginal).not.toBeNull();
+
+    await setScalerTarget(page, halfTarget);
+
+    const cabbageHalfText = await page.getByTestId('ingredient-qty-cabbage').innerText();
+    const totalHalfText = await page.getByTestId('scaler-total-weight').innerText();
+
+    const cabbageHalf = parseDisplayedQuantity(cabbageHalfText);
+    const totalHalf = parseDisplayedQuantity(totalHalfText);
+
+    expect(cabbageHalf).not.toBeNull();
+    expect(totalHalf).not.toBeNull();
+
+    expect(cabbageHalf).toBeCloseTo(cabbageOriginal / 2, 0);
+    expect(totalHalf).toBeCloseTo(totalOriginal / 2, 0);
   });
 });
