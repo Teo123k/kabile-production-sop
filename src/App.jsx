@@ -165,7 +165,8 @@ const KATSU_CURRY_SYSTEM_ORDER = {
 const KATSU_SAUCE_IDS = new Set(['bbq-sauce']);
 const MARINADE_PREP_IDS = new Set([
   'dakgalbi-sauce',
-  'bulgogi-sauce'
+  'bulgogi-sauce',
+  'japchae-sauce'
 ]);
 const MAIN_MEAT_IDS = new Set([
   'bulgogi-dish',
@@ -176,17 +177,20 @@ const MAIN_CARB_IDS = new Set([
   'classic-tteokbokki',
   'japchae-magic-soy',
   'japchae-classic',
-  'japchae-classic-sauce-2',
   'king-tteokbokki-magic-soy'
 ]);
 const MAIN_CARB_ORDER = {
   'classic-tteokbokki': 0,
   'japchae-magic-soy': 1,
   'japchae-classic': 2,
-  'japchae-classic-sauce-2': 3,
-  'king-tteokbokki-magic-soy': 4
+  'king-tteokbokki-magic-soy': 3
 };
 const CARB_BASE_IDS = new Set(['udon-base']);
+const JAPANESE_COLESLAW_IDS = new Set(['goma-mayo-dressing', 'asian-coleslaw']);
+const JAPANESE_COLESLAW_ORDER = {
+  'goma-mayo-dressing': 0,
+  'asian-coleslaw': 1
+};
 const SALAD_IDS = new Set(['asian-coleslaw', 'radish-pickle']);
 const KIMCHI_IDS = new Set(['kimchi-paste', 'kimchi']);
 const KIMCHI_ORDER = {
@@ -770,6 +774,7 @@ const SopMain = () => {
         MAIN_MEAT_IDS.has(r.id) ? 'Main Meat Dish' :
         MAIN_CARB_IDS.has(r.id) ? 'Main + Carb Dish' :
         CARB_BASE_IDS.has(r.id) || portionClass === 'carb' ? 'Carb Base Dish' :
+        JAPANESE_COLESLAW_IDS.has(r.id) ? 'Japanese Coleslaw' :
         SALAD_IDS.has(r.id) || portionClass === 'salad' || portionClass === 'side' ? 'Salad' :
         KIMCHI_IDS.has(r.id) ? 'Kimchi' :
         'Foundation Prep';
@@ -788,6 +793,7 @@ const SopMain = () => {
       'Main Meat Dish',
       'Main + Carb Dish',
       'Carb Base Dish',
+      'Japanese Coleslaw',
       'Salad',
       'Kimchi'
     ];
@@ -800,6 +806,7 @@ const SopMain = () => {
           if (label === 'Fried Chicken (Dipping Sauce)') return (FRIED_CHICKEN_DIP_ORDER[a.id] ?? 99) - (FRIED_CHICKEN_DIP_ORDER[b.id] ?? 99);
           if (label === 'Katsu Curry System') return (KATSU_CURRY_SYSTEM_ORDER[a.id] ?? 99) - (KATSU_CURRY_SYSTEM_ORDER[b.id] ?? 99);
           if (label === 'Main + Carb Dish') return (MAIN_CARB_ORDER[a.id] ?? 99) - (MAIN_CARB_ORDER[b.id] ?? 99);
+          if (label === 'Japanese Coleslaw') return (JAPANESE_COLESLAW_ORDER[a.id] ?? 99) - (JAPANESE_COLESLAW_ORDER[b.id] ?? 99);
           if (label === 'Kimchi') return (KIMCHI_ORDER[a.id] ?? 99) - (KIMCHI_ORDER[b.id] ?? 99);
           return a.name.localeCompare(b.name);
         })
