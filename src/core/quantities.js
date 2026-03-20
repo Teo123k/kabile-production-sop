@@ -19,6 +19,10 @@ export function formatQuantity(val, unit = '', unitSystem = 'metric') {
     let displayVal = val;
     let displayUnit = unit || '';
     const uMatch = displayUnit.toLowerCase();
+    const isGramUnit = uMatch === 'g' || uMatch === 'gram' || uMatch === 'grams';
+    const isKgUnit = /(^|[^a-z])(kg|kilogram|kilograms)([^a-z]|$)/.test(uMatch);
+    const isMlUnit = uMatch === 'ml';
+    const isLiterUnit = /(^|[^a-z])(l|liter|litre)([^a-z]|$)/.test(uMatch);
 
     // STEP 3: Validate Unit Input
     const KNOWN_UNITS = [
@@ -36,9 +40,9 @@ export function formatQuantity(val, unit = '', unitSystem = 'metric') {
     }
 
     if (unitSystem === 'imperial') {
-        if (uMatch === 'g' || uMatch === 'kg') {
+        if (isGramUnit || isKgUnit) {
             let oz = displayVal;
-            if (uMatch === 'kg') oz = displayVal * 1000;
+            if (isKgUnit) oz = displayVal * 1000;
             oz = oz * 0.035274;
             if (oz >= 16) {
                 displayVal = oz / 16;
@@ -47,9 +51,9 @@ export function formatQuantity(val, unit = '', unitSystem = 'metric') {
                 displayVal = oz;
                 displayUnit = 'oz';
             }
-        } else if (uMatch === 'ml' || uMatch === 'l' || uMatch === 'liter') {
+        } else if (isMlUnit || isLiterUnit) {
             let floz = displayVal;
-            if (uMatch !== 'ml') floz = displayVal * 1000;
+            if (!isMlUnit) floz = displayVal * 1000;
             floz = floz * 0.033814;
             if (floz >= 32) {
                 displayVal = floz / 32;
@@ -63,13 +67,19 @@ export function formatQuantity(val, unit = '', unitSystem = 'metric') {
             }
         }
     } else {
-        // Metric auto-scaling - Re-enabled per user request for consistent g/kg display
-        if (uMatch === 'g' && val >= 1000) {
+        // Metric auto-scaling in both directions for cleaner kitchen display.
+        if (isGramUnit && val >= 1000) {
             displayVal = val / 1000;
             displayUnit = 'kg';
-        } else if (uMatch === 'ml' && val >= 1000) {
+        } else if (isMlUnit && val >= 1000) {
             displayVal = val / 1000;
             displayUnit = 'L';
+        } else if (isKgUnit && val > 0 && val < 1) {
+            displayVal = val * 1000;
+            displayUnit = 'g';
+        } else if (isLiterUnit && val > 0 && val < 1) {
+            displayVal = val * 1000;
+            displayUnit = 'ml';
         }
     }
 
