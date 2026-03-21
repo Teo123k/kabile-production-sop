@@ -922,6 +922,7 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
         return Number.isFinite(parsed) ? parsed : null;
       };
       const payload = {
+        recipe_name: (activeRecipe.name || '').trim() || activeRecipe.name || '',
         ingredients: sanitizeJsonValue(activeRecipe.ingredients || []),
         method: sanitizeJsonValue(activeRecipe.method || []),
         bulk_method: sanitizeJsonValue(activeRecipe.bulkMethod || activeRecipe.bulk_method || []),
