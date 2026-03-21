@@ -27,7 +27,7 @@ import {
  * CommandBoard Component - Overhauled for Chef Execution
  * Focus: High Readability, Smart Tooling, Grouped Prep Tasks.
  */
-const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, portionTargets = {}, recipes: masterRecipes = [] }) => {
+const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, portionTargets = {}, recipes: masterRecipes = [], canEdit = false }) => {
     const [boardRecords, setBoardRecords] = useState([]);
     const [loading, setLoading] = useState(true);
     const [exportMenuOpen, setExportMenuOpen] = useState(false);
@@ -1053,13 +1053,15 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                                                         )}
                                                     </div>
                                                     <div className="flex items-center gap-2">
-                                                        {isEditingBox ? (
-                                                            <>
-                                                                <button className="task-icon-button task-icon-button-save" onClick={() => saveEditingBox(r, boxKey, tasks)}><Check size={13} /></button>
-                                                                <button className="task-icon-button" onClick={cancelEditingBox}><X size={13} /></button>
-                                                            </>
-                                                        ) : (
-                                                            <button className="task-icon-button" onClick={() => startEditingBox(boxKey, tasks)}><Pencil size={13} /></button>
+                                                        {canEdit && (
+                                                            isEditingBox ? (
+                                                                <>
+                                                                    <button className="task-icon-button task-icon-button-save" onClick={() => saveEditingBox(r, boxKey, tasks)}><Check size={13} /></button>
+                                                                    <button className="task-icon-button" onClick={cancelEditingBox}><X size={13} /></button>
+                                                                </>
+                                                            ) : (
+                                                                <button className="task-icon-button" onClick={() => startEditingBox(boxKey, tasks)}><Pencil size={13} /></button>
+                                                            )
                                                         )}
                                                     </div>
                                                 </div>
@@ -1101,13 +1103,15 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                                                         )}
                                                     </div>
                                                     <div className="flex items-center gap-2">
-                                                        {isEditingBox ? (
-                                                            <>
-                                                                <button className="task-icon-button task-icon-button-save" onClick={() => saveEditingBox(r, boxKey, [...tasks, ...forwardTasks])}><Check size={13} /></button>
-                                                                <button className="task-icon-button" onClick={cancelEditingBox}><X size={13} /></button>
-                                                            </>
-                                                        ) : (
-                                                            <button className="task-icon-button" onClick={() => startEditingBox(boxKey, [...tasks, ...forwardTasks])}><Pencil size={13} /></button>
+                                                        {canEdit && (
+                                                            isEditingBox ? (
+                                                                <>
+                                                                    <button className="task-icon-button task-icon-button-save" onClick={() => saveEditingBox(r, boxKey, [...tasks, ...forwardTasks])}><Check size={13} /></button>
+                                                                    <button className="task-icon-button" onClick={cancelEditingBox}><X size={13} /></button>
+                                                                </>
+                                                            ) : (
+                                                                <button className="task-icon-button" onClick={() => startEditingBox(boxKey, [...tasks, ...forwardTasks])}><Pencil size={13} /></button>
+                                                            )
                                                         )}
                                                     </div>
                                                 </div>
@@ -1154,13 +1158,15 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                                                         )}
                                                     </div>
                                                     <div className="flex items-center gap-2">
-                                                        {isEditingBox ? (
-                                                            <>
-                                                                <button className="task-icon-button task-icon-button-save" onClick={() => saveEditingBox(r, boxKey, tasks)}><Check size={13} /></button>
-                                                                <button className="task-icon-button" onClick={cancelEditingBox}><X size={13} /></button>
-                                                            </>
-                                                        ) : (
-                                                            <button className="task-icon-button" onClick={() => startEditingBox(boxKey, tasks)}><Pencil size={13} /></button>
+                                                        {canEdit && (
+                                                            isEditingBox ? (
+                                                                <>
+                                                                    <button className="task-icon-button task-icon-button-save" onClick={() => saveEditingBox(r, boxKey, tasks)}><Check size={13} /></button>
+                                                                    <button className="task-icon-button" onClick={cancelEditingBox}><X size={13} /></button>
+                                                                </>
+                                                            ) : (
+                                                                <button className="task-icon-button" onClick={() => startEditingBox(boxKey, tasks)}><Pencil size={13} /></button>
+                                                            )
                                                         )}
                                                     </div>
                                                 </div>

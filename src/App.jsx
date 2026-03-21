@@ -37,7 +37,8 @@ import {
   Maximize2,
   Timer,
   Link2,
-  AlertTriangle
+  AlertTriangle,
+  Lock
 } from 'lucide-react';
 import { Routes, Route, useParams, Navigate } from 'react-router-dom';
 import { useSettings } from './SettingsContext';
@@ -198,8 +199,7 @@ const KIMCHI_ORDER = {
   'kimchi': 1
 };
 
-
-const SopMain = () => {
+const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, role = 'viewer' }) => {
   useEffect(() => { console.log("CORE_LOGIC_DEFENSIVE_UPGRADE_V5_17:45"); }, []);
   const [recipes, setRecipes] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -282,6 +282,8 @@ const SopMain = () => {
   const [offlineStatus, setOfflineStatus] = useState(false);
   const [editIngBase, setEditIngBase] = useState(null); // {idx, field}
   const [isEditMode, setIsEditMode] = useState(false);
+  const [saveState, setSaveState] = useState('idle');
+  const [saveMessage, setSaveMessage] = useState('');
 
   const { clientSlug } = useParams();
   const config = CLIENT_CONFIGS[clientSlug] || CLIENT_CONFIGS['kabile'];
@@ -407,28 +409,81 @@ const SopMain = () => {
   // SHARED STATE: Initialized with Base Yields
   const [planIntent, setPlanIntent] = useState({});
 
+  const normalizeRecipeRow = useCallback((row, legacyMap, normalize) => {
+    const normName = normalize(row.recipe_name || row.dish_name);
+    const normId = normalize(row.recipe_id);
+    const legacyMatch = legacyMap.get(normName) || legacyMap.get(normId);
+
+    let strategy = {};
+    let r = {};
+    try {
+      if (legacyMatch && legacyMatch.presentation_json) {
+        const pjson = typeof legacyMatch.presentation_json === 'string'
+          ? JSON.parse(legacyMatch.presentation_json)
+          : legacyMatch.presentation_json;
+        if (pjson?.strategy) strategy = pjson.strategy;
+      }
+    } catch (e) {
+      console.error("Presentation JSON Parse Error:", e);
+    }
+
+    try {
+      r = typeof row.recipe_json === 'string' ? JSON.parse(row.recipe_json) : (row.recipe_json || {});
+    } catch (e) {
+      console.error("Recipe JSON Parse Error:", e);
+    }
+
+    const baseMethod = Array.isArray(row.method) && row.method.length > 0 ? row.method : (r.method || []);
+    let richMethod = baseMethod;
+    if (strategy.method || strategy.tips || strategy.temp) {
+      richMethod = [
+        strategy.method ? `Methodology: ${strategy.method}` : '',
+        strategy.temp ? `Temp Control: ${strategy.temp}` : '',
+        strategy.tips ? `Chef Tips: ${strategy.tips}` : ''
+      ].filter(Boolean);
+    }
+
+    return {
+      ...row,
+      ...r,
+      id: row.recipe_id || r.id || row.id,
+      name: row.recipe_name || r.name || row.dish_name || r.title,
+      baseYield: row.base_yield || r.baseYield || 1,
+      unit: row.yield_unit || r.unit || 'kg',
+      ingredients: Array.isArray(row.ingredients) && row.ingredients.length > 0
+        ? row.ingredients
+        : (Array.isArray(r.ingredients) ? r.ingredients : []),
+      method: richMethod.length > 0 ? richMethod : ['Standard preparation.'],
+      bulkMethod: Array.isArray(row.bulk_method) && row.bulk_method.length > 0 ? row.bulk_method : (strategy.tips ? [strategy.tips] : []),
+      scalingTips: (row.scaling_tips && typeof row.scaling_tips === 'object' ? row.scaling_tips : (r.scalingTips || {})),
+      note: strategy.note || row.note || r.note || 'No operational notes provided.',
+      dishStyle: row.dish_style || r.dishStyle || r.style || 'stewed',
+      dishCategory: row.tier || row.cuisine_type || r.dishCategory || r.category || 'Tier 2 (Daily)',
+      portion_class: row.portion_class || r.portion_class || r.portionClass || '',
+      recorded_serving_weight: row.recorded_serving_weight ?? r.recorded_serving_weight ?? r.recordedServingWeight ?? null,
+      recorded_serving_unit: row.recorded_serving_unit || r.recorded_serving_unit || r.recordedServingUnit || 'g',
+      production_strategy: row.production_strategy || 'dynamic_daily',
+      production_batch_size: row.production_batch_size || null,
+      is_deleted: row.is_deleted || false,
+      show_on_board: row.show_on_board !== undefined ? row.show_on_board : true,
+      cuisine: row.cuisine || r.cuisine || '',
+      occasion: row.occasion || r.occasion || ''
+    };
+  }, []);
+
   // Fetch Recipes from Supabase with Rich Data Merging
   useEffect(() => {
     async function getRecipes() {
       setLoading(true);
       try {
-        // Attempt to load from offline cache first (Vercel/Chef Best Practices: offline-first)
-        const cached = localStorage.getItem(`sop_cache_${clientSlug || 'kabile'}`);
-        if (cached) {
-          try {
-            const parsedCache = JSON.parse(cached);
-            setRecipes(parsedCache);
-            setLoading(false); // Quick UI win
-          } catch (e) {
-            console.error("Cache corrupted:", e);
-          }
-        }
-
-        // Fetch from multiple tables to extract the richest possible operational data
         const [recipeRes, legacyRes] = await Promise.all([
           supabase.from('sop_recipes').select('*').eq('client_id', clientSlug || 'kabile'),
           supabase.from('consulting_sops').select('*').eq('client_id', clientSlug || 'kabile')
         ]);
+        if (recipeRes.error) throw recipeRes.error;
+        if (legacyRes.error) {
+          console.warn('Legacy consulting_sops read failed, continuing with sop_recipes only:', legacyRes.error.message);
+        }
 
         const normalize = (s) => (s || '').toLowerCase().trim().replace(/^\d+[\s.\-_]*/, '').replace(/[\s\-_]/g, '');
 
@@ -447,83 +502,29 @@ const SopMain = () => {
           baseData = legacyData;
         }
 
-        const parsed = baseData.map(row => {
-          const normName = normalize(row.recipe_name || row.dish_name);
-          const normId = normalize(row.recipe_id);
-          const legacyMatch = legacyMap.get(normName) || legacyMap.get(normId);
-
-          // Extract rich strategy block from the legacy presentation JSON
-          let strategy = {};
-          let r = {};
-          try {
-            if (legacyMatch && legacyMatch.presentation_json) {
-              const pjson = typeof legacyMatch.presentation_json === 'string'
-                ? JSON.parse(legacyMatch.presentation_json)
-                : legacyMatch.presentation_json;
-              if (pjson?.strategy) strategy = pjson.strategy;
-            }
-          } catch (e) {
-            console.error("Presentation JSON Parse Error:", e);
-          }
-
-          try {
-            r = typeof row.recipe_json === 'string' ? JSON.parse(row.recipe_json) : (row.recipe_json || {});
-          } catch (e) {
-            console.error("Recipe JSON Parse Error:", e);
-          }
-
-          // Formulate the richest possible method breakdown
-          const baseMethod = Array.isArray(row.method) && row.method.length > 0 ? row.method : (r.method || []);
-          let richMethod = baseMethod;
-          if (strategy.method || strategy.tips || strategy.temp) {
-            richMethod = [
-              strategy.method ? `Methodology: ${strategy.method}` : '',
-              strategy.temp ? `Temp Control: ${strategy.temp}` : '',
-              strategy.tips ? `Chef Tips: ${strategy.tips}` : ''
-            ].filter(Boolean);
-          }
-
-          return {
-            ...row,
-            ...r,
-            id: row.recipe_id || r.id || row.id,
-            name: row.recipe_name || r.name || row.dish_name || r.title,
-            baseYield: row.base_yield || r.baseYield || 1,
-            unit: row.yield_unit || r.unit || 'kg',
-            ingredients: Array.isArray(row.ingredients) && row.ingredients.length > 0
-              ? row.ingredients
-              : (Array.isArray(r.ingredients) ? r.ingredients : []),
-            method: richMethod.length > 0 ? richMethod : ['Standard preparation.'],
-            bulkMethod: Array.isArray(row.bulk_method) && row.bulk_method.length > 0 ? row.bulk_method : (strategy.tips ? [strategy.tips] : []),
-            scalingTips: (row.scaling_tips && typeof row.scaling_tips === 'object' ? row.scaling_tips : (r.scalingTips || {})),
-            // Prioritize the deep strategy narrative, then standard note
-            note: strategy.note || row.note || r.note || 'No operational notes provided.',
-            dishStyle: row.dish_style || r.dishStyle || r.style || 'stewed',
-            dishCategory: row.tier || row.cuisine_type || r.dishCategory || r.category || 'Tier 2 (Daily)',
-            portion_class: row.portion_class || r.portion_class || r.portionClass || '',
-            recorded_serving_weight: row.recorded_serving_weight ?? r.recorded_serving_weight ?? r.recordedServingWeight ?? null,
-            recorded_serving_unit: row.recorded_serving_unit || r.recorded_serving_unit || r.recordedServingUnit || 'g',
-            production_strategy: row.production_strategy || 'dynamic_daily',
-            production_batch_size: row.production_batch_size || null,
-            is_deleted: row.is_deleted || false,
-            show_on_board: row.show_on_board !== undefined ? row.show_on_board : true,
-            cuisine: row.cuisine || r.cuisine || '',
-            occasion: row.occasion || r.occasion || ''
-          };
-        });
+        const parsed = baseData.map((row) => normalizeRecipeRow(row, legacyMap, normalize));
 
         setRecipes(parsed);
-        // Sync to offline cache
         localStorage.setItem(`sop_cache_${clientSlug || 'kabile'}`, JSON.stringify(parsed));
         setOfflineStatus(false);
       } catch (err) {
         console.error("Fetch failure:", err);
+        const cached = localStorage.getItem(`sop_cache_${clientSlug || 'kabile'}`);
+        if (cached) {
+          try {
+            const parsedCache = JSON.parse(cached);
+            setRecipes(parsedCache);
+            setOfflineStatus(true);
+          } catch (e) {
+            console.error("Cache corrupted:", e);
+          }
+        }
       } finally {
         setLoading(false);
       }
     }
     getRecipes();
-  }, [clientSlug]);
+  }, [clientSlug, normalizeRecipeRow]);
 
   // Secondary initialization for production targets
   useEffect(() => {
@@ -896,6 +897,8 @@ const SopMain = () => {
   const handleUpdateRecipe = async () => {
     if (!activeRecipe) return;
     try {
+      setSaveState('saving');
+      setSaveMessage('Saving to database...');
       const { error } = await supabase.from('sop_recipes').update({
         ingredients: activeRecipe.ingredients,
         method: activeRecipe.method,
@@ -915,9 +918,42 @@ const SopMain = () => {
         recorded_serving_unit: activeRecipe.recorded_serving_unit || null
       }).eq('recipe_id', activeRecipe.id);
       if (error) throw error;
-      // Alert removed per user request for silent saving
+
+      const { data: refreshedRow, error: refreshError } = await supabase
+        .from('sop_recipes')
+        .select('*')
+        .eq('client_id', clientSlug || 'kabile')
+        .eq('recipe_id', activeRecipe.id)
+        .single();
+      if (refreshError) throw refreshError;
+
+      const legacyRes = await supabase
+        .from('consulting_sops')
+        .select('*')
+        .eq('client_id', clientSlug || 'kabile');
+      if (legacyRes.error) throw legacyRes.error;
+
+      const normalize = (s) => (s || '').toLowerCase().trim().replace(/^\d+[\s.\-_]*/, '').replace(/[\s\-_]/g, '');
+      const legacyMap = new Map();
+      (legacyRes.data || []).forEach(l => {
+        legacyMap.set(normalize(l.dish_name), l);
+        if (l.recipe_json?.id) {
+          legacyMap.set(normalize(l.recipe_json.id), l);
+        }
+      });
+      const normalizedRecipe = normalizeRecipeRow(refreshedRow, legacyMap, normalize);
+
+      setRecipes(prev => {
+        const next = prev.map(r => r.id === activeRecipe.id ? normalizedRecipe : r);
+        localStorage.setItem(`sop_cache_${clientSlug || 'kabile'}`, JSON.stringify(next));
+        return next;
+      });
+      setSaveState('saved');
+      setSaveMessage('Saved to database');
     } catch (err) {
       console.error("Save failed:", err);
+      setSaveState('error');
+      setSaveMessage('Save failed. Database was not updated.');
     }
   };
 
@@ -1118,6 +1154,7 @@ const SopMain = () => {
   }, [activeRecipe, setMenuMix]);
 
   const handleEnterEditMode = useCallback(() => {
+    if (!canEdit) return;
     handleDefaultAll();
     setEditingIngId(null);
     setEditingCategoryHeader(null);
@@ -1127,7 +1164,7 @@ const SopMain = () => {
     setShowDeleted(false);
     setIsScalerExportOpen(false);
     setIsEditMode(true);
-  }, [handleDefaultAll]);
+  }, [canEdit, handleDefaultAll]);
 
   const activeDefaultIntent = activeRecipe ? getDefaultIntentForRecipe(activeRecipe) : { val: 1, mode: 'scale' };
 
@@ -1169,35 +1206,6 @@ const SopMain = () => {
     setExpandedNoteIndex(null);
     setLastDeletedNote(null);
   }, [activeRecipe?.id]);
-
-  // AUTO-SAVE LOGIC: Syncs to Supabase when active recipe changes
-  useEffect(() => {
-    if (!activeRecipe || loading) return;
-
-    const handler = setTimeout(async () => {
-      // Small check to prevent infinite loops: check if local matches remote
-      // But for speed, we just do a quiet upsert
-      try {
-        await supabase
-          .from('sop_recipes')
-          .update({
-            ingredients: activeRecipe.ingredients,
-            method: activeRecipe.method,
-            bulk_method: activeRecipe.bulkMethod || activeRecipe.bulk_method,
-            scaling_tips: activeRecipe.scalingTips || {},
-            cuisine: activeRecipe.cuisine,
-            occasion: activeRecipe.occasion,
-            show_on_board: activeRecipe.show_on_board,
-            is_deleted: activeRecipe.is_deleted
-          })
-          .eq('recipe_id', activeRecipe.id);
-      } catch (err) {
-        console.error("Auto-save failed:", err);
-      }
-    }, 2000); // 2 second debounce
-
-    return () => clearTimeout(handler);
-  }, [activeRecipe?.ingredients, activeRecipe?.method, activeRecipe?.bulkMethod, activeRecipe?.scalingTips, activeRecipe?.cuisine, activeRecipe?.occasion, activeRecipe?.show_on_board, activeRecipe?.is_deleted]);
 
   const applyMultiplier = (m) => {
     const activeSeedIds = Object.keys(planIntent);
@@ -1597,7 +1605,11 @@ const SopMain = () => {
         style={{ width: '100%', maxWidth: '1000px' }}
       >
         <div className="grid min-w-0 gap-2 xl:grid-cols-[240px_minmax(0,1fr)_168px] xl:items-center">
-        <div className="flex min-w-0 items-center gap-2 xl:w-[240px] xl:justify-self-start">
+        <div
+          className="flex min-w-0 items-center gap-2 xl:w-[240px] xl:justify-self-start"
+          onDoubleClick={() => onAdminUnlock?.()}
+          title="Double-click for admin access"
+        >
           {config.logo ? <img src={config.logo} alt={config.name} className="h-8" /> : <ChefHat className="text-app-accent" size={24} />}
           <h1 className="min-w-0 truncate whitespace-nowrap font-black text-[13px] 2xl:text-sm uppercase tracking-tight text-app-text">
             {config.name} <span className="text-app-muted font-light">{config.subTitle}</span>
@@ -1623,7 +1635,16 @@ const SopMain = () => {
         </div>
 
         <div className="flex w-full min-w-0 xl:w-full xl:justify-self-end xl:justify-end">
-          <div className="invisible h-[36px] w-full xl:w-[168px]" aria-hidden="true" />
+          <div className="flex w-full items-center justify-end gap-2 xl:w-auto">
+            {canEdit && (
+              <button
+                onClick={onAdminLock}
+                className="flex items-center gap-1 rounded-lg border border-app-border bg-app-surface px-3 py-2 text-[9px] font-black uppercase tracking-widest text-app-text transition-all hover:border-app-accent hover:text-app-accent"
+              >
+                <Lock size={12} /> Lock Edit
+              </button>
+            )}
+          </div>
         </div>
         </div>
       </nav>
@@ -1640,6 +1661,7 @@ const SopMain = () => {
               productionTargets={activeDemand}
               portionTargets={boardPortionTargets}
               recipes={recipes.filter(r => !r.is_deleted)}
+              canEdit={canEdit}
             />
           </Suspense>
         </div>
@@ -1658,6 +1680,7 @@ const SopMain = () => {
                   portionTargets={boardPortionTargets}
                   recipeIdByName={recipeIdByName}
                   onExit={() => setView('scaler')}
+                  canEdit={canEdit}
                 />
               ) : (
                 <div className="h-[600px] flex flex-col items-center justify-center bg-app-surface border border-app-border rounded-xl text-app-muted">
@@ -1805,7 +1828,7 @@ const SopMain = () => {
                 />
 	              </div>
 	              <div className="flex min-w-0 flex-wrap items-center gap-1.5 xl:shrink-0">
-	                {!showDeleted && filteredRecipesList.length > 0 && activeRecipe && !isEditMode && (
+	                {canEdit && !showDeleted && filteredRecipesList.length > 0 && activeRecipe && !isEditMode && (
 	                  <button
 	                    onClick={handleEnterEditMode}
 	                    className="flex items-center gap-1 px-2 py-1.5 bg-app-accent text-app-bg hover:scale-105 active:scale-95 rounded-lg text-[9px] font-black uppercase transition-all shadow-lg shadow-app-accent/20"
@@ -1813,7 +1836,7 @@ const SopMain = () => {
 	                    <Pencil size={11} /> Edit Recipe
 	                  </button>
 	                )}
-	                {isEditMode && (
+	                {canEdit && isEditMode && (
                     <>
 	                    <button
 	                      type="button"
@@ -1844,7 +1867,7 @@ const SopMain = () => {
                           setIsEditMode(false);
                         }}
 	                      className="flex items-center gap-1 px-2 py-1.5 bg-app-accent text-app-bg hover:brightness-110 rounded-lg text-[9px] font-black uppercase transition-all shadow-lg shadow-app-accent/20 border border-app-accent"
-	                    >
+                      >
 	                      <Save size={11} /> SAVE TEMPLATE
 	                    </button>
                       <button
@@ -1856,6 +1879,11 @@ const SopMain = () => {
                       </button>
                     </>
 	                )}
+                  {saveMessage && (
+                    <div className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase border ${saveState === 'error' ? 'bg-red-500/10 text-red-300 border-red-500/20' : saveState === 'saved' ? 'bg-app-accent/10 text-app-accent border-app-accent/20' : 'bg-app-bg text-app-muted border-app-border'}`}>
+                      {saveMessage}
+                    </div>
+                  )}
                   {!isEditMode && !showDeleted && filteredRecipesList.length > 0 && (
                     <div className="relative">
                       <button
@@ -2007,21 +2035,21 @@ const SopMain = () => {
 
 	                        {/* ACTIONS MOVED HERE */}
 		                        <div className="flex items-center gap-1 shrink-0">
-		                          {showDeleted ? (
+		                          {canEdit && showDeleted ? (
 		                            <button
 		                              onClick={() => handleRestore(activeRecipe.id)}
 		                              className="flex items-center gap-1 px-2.5 py-1.5 bg-green-500 text-white hover:brightness-110 rounded-lg text-[8px] font-black uppercase transition-all shadow-lg shadow-green-500/20"
 		                            >
 		                              <Undo2 size={11} /> Restore Recipe
 		                            </button>
-		                          ) : (
+		                          ) : canEdit ? (
 		                            <button
 		                              onClick={() => handleSoftDelete(activeRecipe.id)}
 		                              className="flex items-center gap-1 px-1.5 py-1.5 bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white border border-red-500/20 rounded-lg text-[8px] font-black uppercase transition-all"
 		                            >
 		                              <Trash2 size={11} />
 		                            </button>
-		                          )}
+		                          ) : null}
 		                        </div>
 	                      </div>
 
@@ -2251,18 +2279,20 @@ const SopMain = () => {
                           </button>
                         </div>
                       )}
-                      <button
-                        type="button"
-                        onClick={() => setShowRecipeNotes(prev => !prev)}
-                        className="flex items-center gap-1.5 rounded-md border border-app-accent/20 bg-app-bg px-2 py-1 text-[9px] font-black uppercase tracking-widest text-app-accent hover:bg-app-accent/10 transition-colors"
-                      >
-                        <Info size={12} />
-                        Note +
-                      </button>
+                      {canEdit && (
+                        <button
+                          type="button"
+                          onClick={() => setShowRecipeNotes(prev => !prev)}
+                          className="flex items-center gap-1.5 rounded-md border border-app-accent/20 bg-app-bg px-2 py-1 text-[9px] font-black uppercase tracking-widest text-app-accent hover:bg-app-accent/10 transition-colors"
+                        >
+                          <Info size={12} />
+                          Note +
+                        </button>
+                      )}
                     </div>
                   </div>
 
-                  {showRecipeNotes && (
+                  {canEdit && showRecipeNotes && (
                     <div className={`mx-4 mt-3 rounded-xl border border-app-accent/20 bg-app-bg/95 p-4 shadow-2xl shadow-black/30 relative z-20 ${expandedNoteIndex !== null ? 'min-h-[420px]' : ''}`}>
                       <div className="mb-3 flex items-center justify-between gap-3">
                         <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-app-accent">
@@ -3004,10 +3034,43 @@ const SopMain = () => {
   );
 };
 
+const SimpleClientRoute = () => {
+  const { clientSlug = 'kabile' } = useParams();
+  const unlockStorageKey = `sop_admin_unlock_${clientSlug}`;
+  const [canEdit, setCanEdit] = useState(() => window.localStorage.getItem(unlockStorageKey) === 'true');
+
+  const handleAdminUnlock = useCallback(() => {
+    const secret = (import.meta.env.VITE_ADMIN_EDIT_KEY || 'kabile-admin').trim();
+    const entered = window.prompt('Enter admin key');
+    if (!entered) return;
+    if (entered.trim() === secret) {
+      window.localStorage.setItem(unlockStorageKey, 'true');
+      setCanEdit(true);
+      window.alert('Edit mode unlocked.');
+      return;
+    }
+    window.alert('Incorrect admin key.');
+  }, [unlockStorageKey]);
+
+  const handleAdminLock = useCallback(() => {
+    window.localStorage.removeItem(unlockStorageKey);
+    setCanEdit(false);
+  }, [unlockStorageKey]);
+
+  return (
+    <SopMain
+      canEdit={canEdit}
+      onAdminUnlock={handleAdminUnlock}
+      onAdminLock={handleAdminLock}
+      role={canEdit ? 'admin' : 'viewer'}
+    />
+  );
+};
+
 export default function App() {
   return (
     <Routes>
-      <Route path="/:clientSlug" element={<SopMain />} />
+      <Route path="/:clientSlug" element={<SimpleClientRoute />} />
       <Route path="/" element={<Navigate to="/kabile" replace />} />
     </Routes>
   );

@@ -151,7 +151,7 @@ const SLIDE_STYLES = `
  * @param {string} initialDishName - Optional dish name to start on
  * @param {Function} onExit      - Callback to close the view
  */
-const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit, portionTargets = {}, recipeIdByName = {} }) => {
+const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit, portionTargets = {}, recipeIdByName = {}, canEdit = false }) => {
     const [slides, setSlides] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -281,7 +281,7 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit, portionTar
     ]), []);
 
     const startEditing = useCallback(() => {
-        if (!activeSlide) return;
+        if (!canEdit || !activeSlide) return;
         const sd = activeSlide.data || {};
         setEditingSlideId(activeSlide.id);
         setEditingDraft({
@@ -303,7 +303,7 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit, portionTar
             strategyTips: sd.strategy?.tips || '',
             strategyNote: sd.strategy?.note || ''
         });
-    }, [activeSlide, defaultMissionLines, toMultiline]);
+    }, [activeSlide, canEdit, defaultMissionLines, toMultiline]);
 
     const cancelEditing = useCallback(() => {
         setEditingSlideId(null);
@@ -311,7 +311,7 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit, portionTar
     }, []);
 
     const saveEditing = useCallback(async () => {
-        if (!activeSlide || !editingDraft) return;
+        if (!canEdit || !activeSlide || !editingDraft) return;
         const patch = {
             title: editingDraft.title.trim(),
             meta: editingDraft.meta.trim(),
@@ -362,7 +362,7 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit, portionTar
                 : slide
         )));
         cancelEditing();
-    }, [activeSlide, cancelEditing, clientId, editingDraft, fromMultiline, mergePresentationEnvelope, resolveProfileData]);
+    }, [activeSlide, canEdit, cancelEditing, clientId, editingDraft, fromMultiline, mergePresentationEnvelope, resolveProfileData]);
 
     // ── Navigation ────────────────────────────────────────────────────────────
     const moveSlide = useCallback((dir) => {
@@ -506,7 +506,7 @@ const CinematicSOP = ({ clientId = 'kabile', initialDishName, onExit, portionTar
                                             ) : (
                                                 <h2>{translateIngredient((sd.title || slide.dish_name || '').replace(/^\d+[\s.\-_]*/, ''))}</h2>
                                             )}
-                                            {index === current && (
+                                            {canEdit && index === current && (
                                                 <div className="flex items-center gap-2">
                                                     {isEditingThisSlide ? (
                                                         <>
