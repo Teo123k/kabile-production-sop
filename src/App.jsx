@@ -894,66 +894,100 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
     }
   };
 
+  const sanitizeJsonValue = useCallback((value) => {
+    if (Array.isArray(value)) {
+      return value.map((item) => sanitizeJsonValue(item));
+    }
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value)
+          .filter(([, nestedValue]) => nestedValue !== undefined)
+          .map(([key, nestedValue]) => [key, sanitizeJsonValue(nestedValue)])
+      );
+    }
+    if (typeof value === 'number' && Number.isNaN(value)) {
+      return null;
+    }
+    return value;
+  }, []);
+
   const handleUpdateRecipe = async () => {
-    if (!activeRecipe) return;
+    if (!activeRecipe) return false;
     try {
       setSaveState('saving');
       setSaveMessage('Saving to database...');
-      const { error } = await supabase.from('sop_recipes').update({
-        ingredients: activeRecipe.ingredients,
-        method: activeRecipe.method,
-        bulk_method: activeRecipe.bulkMethod || activeRecipe.bulk_method || [],
-        scaling_tips: activeRecipe.scalingTips || {},
-        show_on_board: activeRecipe.show_on_board,
-        cuisine: activeRecipe.cuisine,
-        occasion: activeRecipe.occasion,
-        yield_unit: activeRecipe.unit,
-        base_yield: activeRecipe.baseYield,
-        yield_mode: activeRecipe.yieldMode,
-        serving_kind: activeRecipe.serving_kind,
-        serving_size: activeRecipe.servingSize,
-        batch_yield: activeRecipe.batchYield,
+      const toNullableNumber = (value) => {
+        if (value === '' || value === null || value === undefined) return null;
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+      };
+      const payload = {
+        ingredients: sanitizeJsonValue(activeRecipe.ingredients || []),
+        method: sanitizeJsonValue(activeRecipe.method || []),
+        bulk_method: sanitizeJsonValue(activeRecipe.bulkMethod || activeRecipe.bulk_method || []),
+        scaling_tips: sanitizeJsonValue(activeRecipe.scalingTips || {}),
+        show_on_board: !!activeRecipe.show_on_board,
+        cuisine: activeRecipe.cuisine || '',
+        occasion: activeRecipe.occasion || '',
+        yield_unit: activeRecipe.unit || 'g',
+        base_yield: toNullableNumber(activeRecipe.baseYield) ?? 1,
+        yield_mode: activeRecipe.yieldMode || null,
+        serving_kind: activeRecipe.serving_kind || null,
+        serving_size: toNullableNumber(activeRecipe.servingSize),
+        batch_yield: toNullableNumber(activeRecipe.batchYield),
         portion_class: activeRecipe.portion_class || null,
-        recorded_serving_weight: activeRecipe.recorded_serving_weight ? parseFloat(activeRecipe.recorded_serving_weight) : null,
+        recorded_serving_weight: toNullableNumber(activeRecipe.recorded_serving_weight),
         recorded_serving_unit: activeRecipe.recorded_serving_unit || null
-      }).eq('recipe_id', activeRecipe.id);
+      };
+
+      const { error } = await supabase.from('sop_recipes').update(payload)
+        .eq('client_id', clientSlug || 'kabile')
+        .eq('recipe_id', activeRecipe.id);
       if (error) throw error;
 
-      const { data: refreshedRow, error: refreshError } = await supabase
-        .from('sop_recipes')
-        .select('*')
-        .eq('client_id', clientSlug || 'kabile')
-        .eq('recipe_id', activeRecipe.id)
-        .single();
-      if (refreshError) throw refreshError;
-
-      const legacyRes = await supabase
-        .from('consulting_sops')
-        .select('*')
-        .eq('client_id', clientSlug || 'kabile');
-      if (legacyRes.error) throw legacyRes.error;
-
-      const normalize = (s) => (s || '').toLowerCase().trim().replace(/^\d+[\s.\-_]*/, '').replace(/[\s\-_]/g, '');
-      const legacyMap = new Map();
-      (legacyRes.data || []).forEach(l => {
-        legacyMap.set(normalize(l.dish_name), l);
-        if (l.recipe_json?.id) {
-          legacyMap.set(normalize(l.recipe_json.id), l);
-        }
-      });
-      const normalizedRecipe = normalizeRecipeRow(refreshedRow, legacyMap, normalize);
-
-      setRecipes(prev => {
-        const next = prev.map(r => r.id === activeRecipe.id ? normalizedRecipe : r);
-        localStorage.setItem(`sop_cache_${clientSlug || 'kabile'}`, JSON.stringify(next));
-        return next;
-      });
       setSaveState('saved');
       setSaveMessage('Saved to database');
+
+      try {
+        const { data: refreshedRow, error: refreshError } = await supabase
+          .from('sop_recipes')
+          .select('*')
+          .eq('client_id', clientSlug || 'kabile')
+          .eq('recipe_id', activeRecipe.id)
+          .single();
+        if (refreshError) throw refreshError;
+
+        const legacyRes = await supabase
+          .from('consulting_sops')
+          .select('*')
+          .eq('client_id', clientSlug || 'kabile');
+        if (legacyRes.error) throw legacyRes.error;
+
+        const normalize = (s) => (s || '').toLowerCase().trim().replace(/^\d+[\s.\-_]*/, '').replace(/[\s\-_]/g, '');
+        const legacyMap = new Map();
+        (legacyRes.data || []).forEach(l => {
+          legacyMap.set(normalize(l.dish_name), l);
+          if (l.recipe_json?.id) {
+            legacyMap.set(normalize(l.recipe_json.id), l);
+          }
+        });
+        const normalizedRecipe = normalizeRecipeRow(refreshedRow, legacyMap, normalize);
+
+        setRecipes(prev => {
+          const next = prev.map(r => r.id === activeRecipe.id ? normalizedRecipe : r);
+          localStorage.setItem(`sop_cache_${clientSlug || 'kabile'}`, JSON.stringify(next));
+          return next;
+        });
+      } catch (refreshErr) {
+        console.error('Post-save refresh failed:', refreshErr);
+      }
+
+      return true;
     } catch (err) {
       console.error("Save failed:", err);
       setSaveState('error');
-      setSaveMessage('Save failed. Database was not updated.');
+      setSaveMessage(`Save failed. ${err?.message || 'Database was not updated.'}`);
+      return false;
     }
   };
 
@@ -1861,7 +1895,8 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
 	                    <button
                         type="button"
 	                      onClick={async () => {
-	                        await handleUpdateRecipe();
+	                        const didSave = await handleUpdateRecipe();
+                          if (!didSave) return;
                           setLastDeletedIngredient(null);
                           setShowDeleted(false);
                           setIsEditMode(false);
@@ -3036,33 +3071,137 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
 
 const SimpleClientRoute = () => {
   const { clientSlug = 'kabile' } = useParams();
-  const unlockStorageKey = `sop_admin_unlock_${clientSlug}`;
-  const [canEdit, setCanEdit] = useState(() => window.localStorage.getItem(unlockStorageKey) === 'true');
+  const normalizedClientSlug = String(clientSlug || 'kabile').trim().toLowerCase();
+  const [session, setSession] = useState(null);
+  const [role, setRole] = useState('viewer');
+
+  const resolveAdminAccess = useCallback(async (user) => {
+    if (!user) {
+      return false;
+    }
+    const { count, error: countError } = await supabase
+      .from('user_roles')
+      .select('user_id', { count: 'exact', head: true });
+
+    if (countError) {
+      console.error('Role count lookup failed:', countError);
+      return false;
+    }
+
+    if (!count) {
+      console.warn('No user_roles rows found; falling back to authenticated admin access.');
+      return true;
+    }
+
+    const { data, error } = await supabase
+      .from('user_roles')
+      .select('role')
+      .eq('user_id', user.id)
+      .eq('client_id', normalizedClientSlug)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Role lookup failed:', error);
+      return false;
+    }
+
+    const normalizedRole = String(data?.role || '').trim().toLowerCase();
+    return normalizedRole === 'admin' || normalizedRole === 'owner' || normalizedRole === 'superadmin' || normalizedRole === 'super_admin';
+  }, [normalizedClientSlug]);
+
+  const loadRole = useCallback(async (user) => {
+    const hasAdminAccess = await resolveAdminAccess(user);
+    setRole(hasAdminAccess ? 'admin' : 'viewer');
+  }, [resolveAdminAccess]);
+
+  useEffect(() => {
+    let mounted = true;
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!mounted) return;
+      if (error) {
+        console.error('Session fetch failed:', error);
+        return;
+      }
+      setSession(data.session ?? null);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (!mounted) return;
+      setSession(nextSession ?? null);
+    });
+    return () => {
+      mounted = false;
+      listener?.subscription?.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    loadRole(session?.user || null);
+  }, [session?.user?.id, loadRole]);
 
   const handleAdminUnlock = useCallback(() => {
-    const secret = (import.meta.env.VITE_ADMIN_EDIT_KEY || 'kabile-admin').trim();
-    const entered = window.prompt('Enter admin key');
-    if (!entered) return;
-    if (entered.trim() === secret) {
-      window.localStorage.setItem(unlockStorageKey, 'true');
-      setCanEdit(true);
-      window.alert('Edit mode unlocked.');
-      return;
-    }
-    window.alert('Incorrect admin key.');
-  }, [unlockStorageKey]);
+    const email = window.prompt('Admin email');
+    if (!email) return;
+    const password = window.prompt('Admin password');
+    if (!password) return;
+    supabase.auth.signInWithPassword({ email: email.trim(), password }).then(async ({ data, error }) => {
+      if (error) {
+        window.alert(`Admin login failed: ${error.message}`);
+        return;
+      }
+      const nextUser = data?.user || data?.session?.user || null;
+      if (!nextUser) {
+        window.alert('Admin login failed.');
+        return;
+      }
+      const { data: roleRow, error: roleError } = await supabase
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', nextUser.id)
+        .eq('client_id', normalizedClientSlug)
+        .maybeSingle();
+      const normalizedRole = String(roleRow?.role || '').trim().toLowerCase();
+      const hasExplicitAdminRole = normalizedRole === 'admin' || normalizedRole === 'owner' || normalizedRole === 'superadmin' || normalizedRole === 'super_admin';
+      let hasAdminAccess = hasExplicitAdminRole;
+      if (roleError) {
+        console.error('Role lookup failed during admin unlock:', roleError);
+      }
+      if (!hasAdminAccess) {
+        const { count, error: countError } = await supabase
+          .from('user_roles')
+          .select('user_id', { count: 'exact', head: true });
 
-  const handleAdminLock = useCallback(() => {
-    window.localStorage.removeItem(unlockStorageKey);
-    setCanEdit(false);
-  }, [unlockStorageKey]);
+        if (countError) {
+          console.error('Role count lookup failed during admin unlock:', countError);
+        }
+
+        // If role rows have not been configured yet, treat a successful auth login as the admin gate.
+        hasAdminAccess = !count || await resolveAdminAccess(nextUser);
+      }
+      if (!hasAdminAccess) {
+        await supabase.auth.signOut();
+        setSession(null);
+        setRole('viewer');
+        window.alert('This account does not have admin access for this client.');
+        return;
+      }
+      setSession(data?.session || null);
+      setRole('admin');
+      window.alert('Edit mode unlocked.');
+    });
+  }, [normalizedClientSlug, resolveAdminAccess]);
+
+  const handleAdminLock = useCallback(async () => {
+    await supabase.auth.signOut();
+    setSession(null);
+    setRole('viewer');
+  }, []);
 
   return (
     <SopMain
-      canEdit={canEdit}
+      canEdit={role === 'admin'}
       onAdminUnlock={handleAdminUnlock}
       onAdminLock={handleAdminLock}
-      role={canEdit ? 'admin' : 'viewer'}
+      role={role}
     />
   );
 };
