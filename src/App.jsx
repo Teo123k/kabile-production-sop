@@ -198,6 +198,39 @@ const KIMCHI_ORDER = {
   'kimchi-paste': 0,
   'kimchi': 1
 };
+const RECIPE_GROUP_OPTIONS = [
+  'Foundation Prep',
+  'Fried Chicken Sauce (Coating)',
+  'Fried Chicken (Dipping Sauce)',
+  'Katsu Curry System',
+  'Katsu Sauce',
+  'Marinade / Pre-Prep',
+  'Main Meat Dish',
+  'Main + Carb Dish',
+  'Carb Base Dish',
+  'Japanese Coleslaw',
+  'Salad',
+  'Kimchi'
+];
+
+const getRecipeGroupLabel = (recipe = {}) => {
+  const customGroup = String(recipe?.scalingTips?.selectorGroup || recipe?.scaling_tips?.selectorGroup || '').trim();
+  if (customGroup) return customGroup;
+
+  return FOUNDATION_PREP_IDS.has(recipe.id) ? 'Foundation Prep' :
+    FRIED_CHICKEN_COATING_IDS.has(recipe.id) ? 'Fried Chicken Sauce (Coating)' :
+    FRIED_CHICKEN_DIP_IDS.has(recipe.id) ? 'Fried Chicken (Dipping Sauce)' :
+    KATSU_CURRY_SYSTEM_IDS.has(recipe.id) ? 'Katsu Curry System' :
+    KATSU_SAUCE_IDS.has(recipe.id) ? 'Katsu Sauce' :
+    MARINADE_PREP_IDS.has(recipe.id) ? 'Marinade / Pre-Prep' :
+    MAIN_MEAT_IDS.has(recipe.id) ? 'Main Meat Dish' :
+    MAIN_CARB_IDS.has(recipe.id) ? 'Main + Carb Dish' :
+    CARB_BASE_IDS.has(recipe.id) ? 'Carb Base Dish' :
+    JAPANESE_COLESLAW_IDS.has(recipe.id) ? 'Japanese Coleslaw' :
+    SALAD_IDS.has(recipe.id) ? 'Salad' :
+    KIMCHI_IDS.has(recipe.id) ? 'Kimchi' :
+    'Foundation Prep';
+};
 
 const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, role = 'viewer' }) => {
   useEffect(() => { console.log("CORE_LOGIC_DEFENSIVE_UPGRADE_V5_17:45"); }, []);
@@ -672,6 +705,7 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
     const found = filteredRecipesList.find(r => r.id === selectedId);
     return found || filteredRecipesList[0];
   }, [selectedId, filteredRecipesList]);
+  const activeRecipeGroup = useMemo(() => getRecipeGroupLabel(activeRecipe), [activeRecipe]);
 
   const linkableRecipes = useMemo(
     () => recipes.filter(r => r.id && r.id !== activeRecipe?.id),
@@ -794,39 +828,17 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
   const groupedRecipes = useMemo(() => {
     const groups = filteredRecipesList.reduce((acc, r) => {
       const portionClass = (r.portion_class || r.portionClass || '').toLowerCase();
-      const groupLabel =
-        FOUNDATION_PREP_IDS.has(r.id) ? 'Foundation Prep' :
-        FRIED_CHICKEN_COATING_IDS.has(r.id) ? 'Fried Chicken Sauce (Coating)' :
-        FRIED_CHICKEN_DIP_IDS.has(r.id) ? 'Fried Chicken (Dipping Sauce)' :
-        KATSU_CURRY_SYSTEM_IDS.has(r.id) ? 'Katsu Curry System' :
-        KATSU_SAUCE_IDS.has(r.id) ? 'Katsu Sauce' :
-        MARINADE_PREP_IDS.has(r.id) ? 'Marinade / Pre-Prep' :
-        MAIN_MEAT_IDS.has(r.id) ? 'Main Meat Dish' :
-        MAIN_CARB_IDS.has(r.id) ? 'Main + Carb Dish' :
-        CARB_BASE_IDS.has(r.id) || portionClass === 'carb' ? 'Carb Base Dish' :
-        JAPANESE_COLESLAW_IDS.has(r.id) ? 'Japanese Coleslaw' :
-        SALAD_IDS.has(r.id) || portionClass === 'salad' || portionClass === 'side' ? 'Salad' :
-        KIMCHI_IDS.has(r.id) ? 'Kimchi' :
-        'Foundation Prep';
+      let groupLabel = getRecipeGroupLabel(r);
+      if (!r?.scalingTips?.selectorGroup && !r?.scaling_tips?.selectorGroup) {
+        if (CARB_BASE_IDS.has(r.id) || portionClass === 'carb') groupLabel = 'Carb Base Dish';
+        if (SALAD_IDS.has(r.id) || portionClass === 'salad' || portionClass === 'side') groupLabel = 'Salad';
+      }
       if (!acc[groupLabel]) acc[groupLabel] = [];
       acc[groupLabel].push(r);
       return acc;
     }, {});
 
-    const order = [
-      'Foundation Prep',
-      'Fried Chicken Sauce (Coating)',
-      'Fried Chicken (Dipping Sauce)',
-      'Katsu Curry System',
-      'Katsu Sauce',
-      'Marinade / Pre-Prep',
-      'Main Meat Dish',
-      'Main + Carb Dish',
-      'Carb Base Dish',
-      'Japanese Coleslaw',
-      'Salad',
-      'Kimchi'
-    ];
+    const order = RECIPE_GROUP_OPTIONS;
     return Object.entries(groups)
       .map(([label, items]) => [
         label,
@@ -2039,8 +2051,9 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
 			                                >
 		                                  {groupedRecipes.map(([groupLabel, items]) => (
 		                                    <div key={groupLabel} className="mb-2 last:mb-0">
-		                                      <div className="px-2 py-1 text-[10px] font-black uppercase tracking-widest text-app-muted">
-		                                        {groupLabel}
+		                                      <div className="px-2 py-1 text-[10px] font-black uppercase tracking-widest text-app-muted flex items-center justify-between gap-2">
+		                                        <span>{groupLabel}</span>
+		                                        <span className="text-[9px] opacity-60">{items.length}</span>
 		                                      </div>
 		                                      <div className="space-y-1">
 		                                        {items.map(r => {
@@ -2090,6 +2103,26 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
 	                      </div>
 
                       <div className="flex flex-wrap items-center gap-1.5">
+                        <div className="flex items-center gap-1 bg-app-bg px-1.5 py-0.5 rounded border border-app-border min-w-0">
+                          {isEditMode ? (
+                            <select
+                              className="bg-transparent border-none outline-none text-[9px] font-black text-app-accent uppercase tracking-widest min-w-[150px]"
+                              value={activeRecipeGroup}
+                              onChange={(e) => updateActiveRecipeLocal({
+                                scalingTips: {
+                                  ...(activeRecipe?.scalingTips || {}),
+                                  selectorGroup: e.target.value
+                                }
+                              })}
+                            >
+                              {RECIPE_GROUP_OPTIONS.map((groupName) => (
+                                <option key={groupName} value={groupName}>{groupName}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span className="text-[8px] font-black text-app-muted uppercase tracking-widest">{activeRecipeGroup}</span>
+                          )}
+                        </div>
                         <div className="flex items-center gap-1 bg-app-bg px-1.5 py-0.5 rounded border border-app-border">
                           <input
                             type="checkbox"
