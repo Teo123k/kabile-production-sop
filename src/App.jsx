@@ -816,11 +816,11 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
   const portionWeightGrams = resolvedRecipePortionWeight || getPortionWeight(activeRecipe, coreSettings, recipes);
   
   // DEFENSIVE BASELINE: If no intent, use physical sumWeight directly (bypass BOM)
-  const totalEdibleWeightGrams = !hasIntent
-    ? (portionMode
-      ? (sumIngredientsGrams(activeRecipe) || activeRecipe?.baseYield || 1)
-      : currentEdibleYieldValue)
-    : (getRecipeBaselineGrams(activeRecipe, false, coreSettings) * rootScaleFactor);
+  const ingredientMassBaseline = activeRecipe ? sumIngredientsGrams(activeRecipe) : 0;
+  const ingredientMassEdibleBaseline = activeRecipe ? sumIngredientsGrams(activeRecipe, true) : 0;
+  const totalEdibleWeightGrams = hasIntent
+    ? ((ingredientMassEdibleBaseline || ingredientMassBaseline || getRecipeBaselineGrams(activeRecipe, true, coreSettings)) * rootScaleFactor)
+    : (ingredientMassEdibleBaseline || ingredientMassBaseline || currentEdibleYieldValue);
   const totalEdibleWeightFormatted = formatDisplay(totalEdibleWeightGrams, 'g');
 
   // Memoize grouped and sorted recipes for the selector (Vercel Best Practices: rerender-memo)
