@@ -761,6 +761,150 @@ const buildChefPrepDraft = (recipe = {}, scaleFactor = 1, targetWeight = 0) => {
   };
 };
 
+const stripStepQuantities = (step = '') => (
+  String(step || '')
+    .replace(/\b\d+(\.\d+)?\s?(kg|g|gram|grams|ml|l|litre|liter|tbsp|tsp|cup|cups|oz|lb|lbs|pcs|pc|piece|pieces)\b/gi, '')
+    .replace(/\(\s*\d+(\.\d+)?\s?(kg|g|gram|grams|ml|l|litre|liter|tbsp|tsp|cup|cups|oz|lb|lbs|pcs|pc|piece|pieces)[^)]*\)/gi, '')
+    .replace(/\b\d+(\.\d+)?\s?x\b/gi, '')
+    .replace(/\bfor\s+\d+(\.\d+)?\s?(kg|g|gram|grams|ml|l|litre|liter|tbsp|tsp|cup|cups|oz|lb|lbs|pcs|pc|piece|pieces)\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([,.;])/g, '$1')
+    .trim()
+);
+
+const INSTRUCTION_ACTION_VERBS = [
+  'mix', 'whisk', 'add', 'blend', 'fold', 'heat', 'cook', 'season', 'rest', 'soak',
+  'transfer', 'label', 'store', 'chill', 'coat', 'dip', 'press', 'simmer', 'reduce',
+  'stir', 'combine', 'build', 'melt', 'toast', 'strain', 'portion'
+];
+
+const stripInstructionLeadIn = (step = '') => {
+  const text = String(step || '').trim();
+  if (!text) return '';
+  const lower = text.toLowerCase();
+  const indexes = INSTRUCTION_ACTION_VERBS
+    .map((verb) => ({ verb, index: lower.search(new RegExp(`\\b${verb}\\b`, 'i')) }))
+    .filter((entry) => entry.index >= 0)
+    .sort((a, b) => a.index - b.index);
+
+  if (indexes.length === 0) return text;
+
+  const firstActionIndex = indexes[0].index;
+  const prefix = text.slice(0, firstActionIndex).trim();
+  if (!prefix) return text;
+
+  const normalizedPrefix = prefix
+    .replace(/["“”']/g, '')
+    .replace(/\([^)]*\)/g, '')
+    .replace(/[:,-]+$/g, '')
+    .trim();
+
+  const prefixWordCount = normalizedPrefix ? normalizedPrefix.split(/\s+/).length : 0;
+  const looksLikeTitle = prefixWordCount <= 8 && !/[.!?]/.test(normalizedPrefix);
+  return looksLikeTitle ? text.slice(firstActionIndex).trim() : text;
+};
+
+const tightenInstructionSentence = (step = '') => (
+  String(step || '')
+    .replace(/^[“"']?the\s+[^:"]+[:"]\s*/i, '')
+    .replace(/^[“"']?[^"]+["']\s*finish\s*/i, '')
+    .replace(/\((critical|service stage|final|important|optional)\)/gi, '')
+    .replace(/^in a [^,.;]+,\s*/i, '')
+    .replace(/^in the [^,.;]+,\s*/i, '')
+    .replace(/^using a [^,.;]+,\s*/i, '')
+    .replace(/^using the [^,.;]+,\s*/i, '')
+    .replace(/\bin a small bowl\b/gi, '')
+    .replace(/\bin your main mixing bowl\b/gi, '')
+    .replace(/\bin the main mixing bowl\b/gi, '')
+    .replace(/\bin a large heavy-bottomed pot\b/gi, '')
+    .replace(/\bin a heavy-bottomed pot\b/gi, '')
+    .replace(/\bover medium(-high)? heat\b/gi, '')
+    .replace(/\bincrease heat to medium-high and\b/gi, '')
+    .replace(/\bbring the mixture to a gentle simmer\b/gi, 'bring to a gentle simmer')
+    .replace(/\bbring to a gentle simmer, whisking constantly to ensure\b/gi, 'bring to a gentle simmer, whisking until')
+    .replace(/\bwhisking constantly to ensure\b/gi, 'whisking until')
+    .replace(/\binto a single, golden liquid\b/gi, 'until smooth')
+    .replace(/\buntil fragrant\b/gi, 'until fragrant')
+    .replace(/\bcreate a slurry by mixing\b/gi, 'mix')
+    .replace(/\bwith a tiny splash of cold water or a tablespoon of the cold\b/gi, 'with cold')
+    .replace(/\bwith a tiny splash of cold water\b/gi, 'with cold water')
+    .replace(/\bwhisk the slurry into\b/gi, 'whisk the slurry into')
+    .replace(/\bcontinue to simmer for\b/gi, 'simmer for')
+    .replace(/\bfrom step \d+\b/gi, '')
+    .replace(/\buse this ratio to maintain[^.]*$/gi, '')
+    .replace(/\bthe\s+[^.]+?\s+finish\b/gi, '')
+    .replace(/\badd the minced\b/gi, 'add')
+    .replace(/\badd the\b/gi, 'add')
+    .replace(/\bstir in the\b/gi, 'add')
+    .replace(/\bstir in\b/gi, 'add')
+    .replace(/\bsaute gently\b/gi, 'saute')
+    .replace(/\bmelt the\b/gi, 'melt')
+    .replace(/\buntil fully combined\b/gi, 'until combined')
+    .replace(/\buntil smooth and fully combined\b/gi, 'until smooth')
+    .replace(/\buntil smooth and emulsified\b/gi, 'until smooth')
+    .replace(/\buntil evenly combined\b/gi, 'until combined')
+    .replace(/\bemulsify into\b/gi, 'emulsify into')
+    .replace(/\bcheck the balance\b/gi, 'check seasoning')
+    .replace(/\badjust the finish\b/gi, 'adjust seasoning')
+    .replace(/\badd in\b/gi, 'add')
+    .replace(/\bfold through\b/gi, 'fold in')
+    .replace(/\bwork into a smooth flavour base\b/gi, 'mix smooth')
+    .replace(/\bwork until fully combined\b/gi, 'mix until combined')
+    .replace(/\bstir well and let it sit for\b/gi, 'rest for')
+    .replace(/\blet it sit for\b/gi, 'rest for')
+    .replace(/\bwhisk until perfectly smooth and a deep, uniform red\b/gi, 'whisk until smooth')
+    .replace(/\bsince you are adding\b/gi, 'add')
+    .replace(/\bjust before coating\b/gi, 'before coating')
+    .replace(/\byour\s+/gi, '')
+    .replace(/\bperfectly\b/gi, '')
+    .replace(/\bdeep, uniform\b/gi, '')
+    .replace(/\ba single, golden liquid\b/gi, 'a smooth glaze')
+    .replace(/\s*,\s*/g, ', ')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/,\s*,/g, ',')
+    .replace(/\s+,/g, ',')
+    .replace(/\bportion, label, and store chilled\b/gi, 'label and chill')
+    .replace(/\bportion, label, and store\b/gi, 'label and store')
+    .replace(/\btransfer to labeled containers and chill\b/gi, 'transfer, label, and chill')
+    .replace(/\btransfer to labeled containers and hold ready for service\b/gi, 'transfer and hold for service')
+    .replace(/\s+/g, ' ')
+    .trim()
+);
+
+const summarizeInstructionSteps = (steps = []) => {
+  const source = (Array.isArray(steps) ? steps : [])
+    .map((step) => String(step || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+
+  const cleaned = source.map((step) => {
+    const normalized = tightenInstructionSentence(
+      stripInstructionLeadIn(
+        stripStepQuantities(
+          step
+            .replace(/^methodology:\s*/i, '')
+            .replace(/^\d+\s*/, '')
+            .replace(/\bmake sure to\b/gi, '')
+            .replace(/\bmake sure\b/gi, '')
+            .replace(/\bcarefully\b/gi, '')
+            .replace(/\bslowly\b/gi, '')
+            .replace(/\bvery\b/gi, '')
+            .replace(/\bin order to\b/gi, 'to')
+            .replace(/\s+/g, ' ')
+            .trim()
+        )
+      )
+    );
+
+    const withoutPeriod = normalized.replace(/[.]+$/, '').trim();
+    if (!withoutPeriod) return '';
+    return `${withoutPeriod.charAt(0).toUpperCase()}${withoutPeriod.slice(1)}.`;
+  }).filter(Boolean);
+
+  return cleaned
+    .filter((step, index, collection) => collection.indexOf(step) === index)
+    .slice(0, 4);
+};
+
 const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, role = 'viewer' }) => {
   useEffect(() => { console.log("CORE_LOGIC_DEFENSIVE_UPGRADE_V5_17:45"); }, []);
   const [recipes, setRecipes] = useState([]);
@@ -846,6 +990,7 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
   const [isEditMode, setIsEditMode] = useState(false);
   const [saveState, setSaveState] = useState('idle');
   const [saveMessage, setSaveMessage] = useState('');
+  const [pendingCleanBackup, setPendingCleanBackup] = useState(null);
 
   const { clientSlug } = useParams();
   const config = CLIENT_CONFIGS[clientSlug] || CLIENT_CONFIGS['kabile'];
@@ -1572,6 +1717,7 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
 
   const generatePrepBoardDraft = useCallback(() => {
     if (!activeRecipe) return;
+    if (!isEditMode) setIsEditMode(true);
     const draft = buildChefPrepDraft(activeRecipe, rootScaleFactor, currentYieldValue);
     updateActiveRecipeLocal({
       method: draft.steps,
@@ -1583,7 +1729,47 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
         generatedPrep: draft
       }
     });
-  }, [activeRecipe, currentYieldValue, isBulkMode, rootScaleFactor]);
+  }, [activeRecipe, currentYieldValue, isBulkMode, isEditMode, rootScaleFactor]);
+
+  const cleanCurrentInstruction = useCallback(() => {
+    if (!activeRecipe) return;
+    const visibleMethod = isBulkMode && Array.isArray(activeRecipe?.bulkMethod) ? activeRecipe.bulkMethod : activeRecipe?.method;
+    const cleanedSteps = summarizeInstructionSteps(visibleMethod);
+    if (cleanedSteps.length === 0) return;
+
+    setPendingCleanBackup({
+      recipeId: activeRecipe.id,
+      method: [...(activeRecipe?.method || [])],
+      bulkMethod: [...(activeRecipe?.bulkMethod || [])]
+    });
+
+    updateActiveRecipeLocal({
+      method: cleanedSteps,
+      ...(isBulkMode ? { bulkMethod: cleanedSteps } : {}),
+      scalingTips: {
+        ...(activeRecipe?.scalingTips || {}),
+        generatedPrep: {
+          ...(activeRecipe?.scalingTips?.generatedPrep || {}),
+          steps: cleanedSteps
+        }
+      }
+    });
+  }, [activeRecipe, isBulkMode]);
+
+  const undoCleanInstruction = useCallback(() => {
+    if (!activeRecipe || !pendingCleanBackup || pendingCleanBackup.recipeId !== activeRecipe.id) return;
+    updateActiveRecipeLocal({
+      method: pendingCleanBackup.method,
+      bulkMethod: pendingCleanBackup.bulkMethod
+    });
+    setPendingCleanBackup(null);
+  }, [activeRecipe, pendingCleanBackup]);
+
+  const saveCleanedInstruction = useCallback(async () => {
+    const didSave = await handleUpdateRecipe();
+    if (!didSave) return;
+    setPendingCleanBackup(null);
+  }, [handleUpdateRecipe]);
 
   const updateGeneratedPrepStep = useCallback((index, value) => {
     const currentDraft = activeRecipe?.scalingTips?.generatedPrep;
@@ -2516,12 +2702,24 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
 	              </div>
 	              <div className="flex min-w-0 flex-wrap items-center gap-1.5 xl:shrink-0">
 	                {canEdit && !showDeleted && filteredRecipesList.length > 0 && activeRecipe && !isEditMode && (
+                    <>
 	                  <button
 	                    onClick={handleEnterEditMode}
 	                    className="flex items-center gap-1 px-2 py-1.5 bg-app-accent text-app-bg hover:scale-105 active:scale-95 rounded-lg text-[9px] font-black uppercase transition-all shadow-lg shadow-app-accent/20"
 	                  >
 	                    <Pencil size={11} /> Edit Recipe
 	                  </button>
+                      {pendingCleanBackup?.recipeId === activeRecipe.id && (
+                        <>
+                          <button
+                            onClick={saveCleanedInstruction}
+                            className="flex items-center gap-1 px-2 py-1.5 bg-app-surface text-app-text border border-app-border hover:border-app-accent rounded-lg text-[9px] font-black uppercase transition-all"
+                          >
+                            <Save size={11} /> Save Template
+                          </button>
+                        </>
+                      )}
+                    </>
 	                )}
 	                {canEdit && isEditMode && (
                     <>
@@ -3381,7 +3579,25 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
                         Instruction
                       </h4>
                       <div className="flex items-center gap-2">
-                        {isEditMode && (
+                        {canEdit && !isEditMode && (
+                          <button
+                            type="button"
+                            onClick={cleanCurrentInstruction}
+                            className="rounded-md border border-app-accent/20 bg-app-accent/10 px-2 py-1 text-[9px] font-black uppercase tracking-widest text-app-accent hover:bg-app-accent hover:text-app-bg transition-colors"
+                          >
+                            Clean
+                          </button>
+                        )}
+                        {canEdit && !isEditMode && pendingCleanBackup?.recipeId === activeRecipe.id && (
+                          <button
+                            type="button"
+                            onClick={undoCleanInstruction}
+                            className="rounded-md border border-app-border bg-app-bg px-2 py-1 text-[9px] font-black uppercase tracking-widest text-app-text hover:border-app-accent transition-colors"
+                          >
+                            Undo
+                          </button>
+                        )}
+                        {canEdit && isEditMode && (
                           <button
                             type="button"
                             onClick={generatePrepBoardDraft}
@@ -3390,7 +3606,7 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
                             Generate Prep
                           </button>
                         )}
-                        {isEditMode && (
+                        {canEdit && isEditMode && (
                           <button
                             type="button"
                             onClick={saveGeneratedPrepToBoard}
