@@ -1204,6 +1204,16 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                                                     </div>
                                                     <div className="flex items-center gap-2">
                                                         {canEdit && (
+                                                            <button
+                                                                type="button"
+                                                                className="task-icon-button"
+                                                                onClick={() => generateRecipePrep(r)}
+                                                                title="Generate prep summary"
+                                                            >
+                                                                <Zap size={13} />
+                                                            </button>
+                                                        )}
+                                                        {canEdit && (
                                                             isEditingBox ? (
                                                                 <>
                                                                     <button className="task-icon-button task-icon-button-save" onClick={() => saveEditingBox(r, boxKey, tasks)}><Check size={13} /></button>
