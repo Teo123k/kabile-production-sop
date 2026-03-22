@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Check,
   Download,
+  GripVertical,
   Pencil,
   Plus,
   Printer,
@@ -365,6 +366,36 @@ const WeeklyScheduleBoard = ({
     if (error) {
       console.error('Weekly note update failed:', error);
       window.alert(`Weekly note update failed: ${error.message}`);
+      await loadScheduleRows();
+    }
+  }, [loadScheduleRows]);
+
+  const updateEntryTargets = useCallback(async (entryId, updates) => {
+    const normalizedUpdates = {
+      ...(updates.target_weight !== undefined ? {
+        target_weight: updates.target_weight === '' || updates.target_weight === null
+          ? null
+          : Math.max(0, Number(updates.target_weight) || 0)
+      } : {}),
+      ...(updates.target_portions !== undefined ? {
+        target_portions: updates.target_portions === '' || updates.target_portions === null
+          ? null
+          : Math.max(0, Number(updates.target_portions) || 0)
+      } : {})
+    };
+
+    setScheduleRows((prev) => prev.map((row) => (
+      row.id === entryId ? { ...row, ...normalizedUpdates } : row
+    )));
+
+    const { error } = await supabase
+      .from('weekly_prep_schedule')
+      .update(normalizedUpdates)
+      .eq('id', entryId);
+
+    if (error) {
+      console.error('Weekly target update failed:', error);
+      window.alert(`Weekly target update failed: ${error.message}`);
       await loadScheduleRows();
     }
   }, [loadScheduleRows]);
@@ -860,7 +891,7 @@ const WeeklyScheduleBoard = ({
         .weekly-grid { display: flex; gap: 14px; overflow-x: auto; overflow-y: hidden; padding-bottom: 8px; scroll-behavior: smooth; scrollbar-width: none; -ms-overflow-style: none; }
         .weekly-grid::-webkit-scrollbar { display: none; }
         .weekly-day-column { flex: 0 0 calc((100% - 12px) / 4); border: 1px solid var(--border); background: var(--surface-low); border-radius: 16px; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 220px; min-width: 280px; max-height: calc(100vh - 260px); }
-        .weekly-day-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; }
+        .weekly-day-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
         .weekly-day-header.is-start-day .weekly-day-title { color: var(--app-accent); }
         .weekly-day-title { font-size: 12px; font-weight: 900; text-transform: uppercase; color: var(--text); }
         .weekly-add-row { display: flex; gap: 8px; align-items: center; }
@@ -882,6 +913,10 @@ const WeeklyScheduleBoard = ({
         .weekly-tab-card.is-active { border-color: rgba(212,175,55,0.26); box-shadow: 0 10px 28px rgba(0,0,0,0.18); }
         .weekly-tab-card.is-dragging { opacity: 0.45; transform: scale(0.98); }
         .weekly-tab-card.is-drop-target { border-color: rgba(212,175,55,0.45); box-shadow: 0 0 0 1px rgba(212,175,55,0.28); }
+        .weekly-tab-header { display: flex; align-items: stretch; gap: 0; }
+        .weekly-drag-handle { width: 34px; flex: 0 0 34px; border: none; border-right: 1px solid var(--border); background: transparent; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s; cursor: grab; }
+        .weekly-drag-handle:hover { color: var(--app-accent); background: rgba(212,175,55,0.06); }
+        .weekly-drag-handle:active { cursor: grabbing; }
         .weekly-tab-button { width: 100%; text-align: left; border: none; background: transparent; color: var(--muted); padding: 10px 12px; font-size: 10px; font-weight: 800; text-transform: uppercase; transition: all 0.2s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .weekly-tab-button:hover { border-color: var(--app-accent); color: var(--text); }
         .weekly-tab-button.is-active { border-color: rgba(212,175,55,0.28); background: rgba(212,175,55,0.1); color: var(--app-accent); }
@@ -889,6 +924,10 @@ const WeeklyScheduleBoard = ({
         .weekly-card-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
         .weekly-card-title { font-size: 11px; font-weight: 900; text-transform: uppercase; color: var(--text); line-height: 1.25; }
         .weekly-card-meta { font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-top: 4px; }
+        .weekly-target-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+        .weekly-target-field { display: flex; flex-direction: column; gap: 4px; }
+        .weekly-target-label { font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+        .weekly-target-input { width: 100%; border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 10px; padding: 9px 10px; font-size: 10px; font-weight: 800; text-transform: uppercase; outline: none; }
         .weekly-note-input { width: 100%; min-height: 86px; resize: vertical; border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 10px; padding: 10px; font-size: 10px; font-weight: 700; line-height: 1.4; outline: none; }
         .weekly-note-display { min-height: 86px; border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 10px; padding: 10px; font-size: 10px; font-weight: 700; line-height: 1.4; white-space: pre-wrap; }
         .weekly-task-preview { display: flex; flex-direction: column; gap: 6px; }
@@ -937,6 +976,19 @@ const WeeklyScheduleBoard = ({
                     onChange={(e) => setDailyHours(Math.max(1, Number(e.target.value) || 1))}
                     title="Daily prep hours"
                   />
+                </div>
+                <div className="weekly-hours-group">
+                  <span className="weekly-hours-label">Start Day</span>
+                  <select
+                    value={autoStartDayKey}
+                    onChange={(e) => setAutoStartDayKey(e.target.value)}
+                    className="weekly-date-input"
+                    title="Auto-generate start day"
+                  >
+                    {DAY_COLUMNS.map(([dayKey, dayLabel]) => (
+                      <option key={dayKey} value={dayKey}>{dayLabel}</option>
+                    ))}
+                  </select>
                 </div>
                 <button
                   className="weekly-button weekly-button-accent"
@@ -990,11 +1042,7 @@ const WeeklyScheduleBoard = ({
             <div className="weekly-grid" ref={daysScrollerRef}>
               {DAY_COLUMNS.map(([dayKey, dayLabel]) => (
             <section key={dayKey} className="weekly-day-column">
-              <div
-                className={`weekly-day-header ${autoStartDayKey === dayKey ? 'is-start-day' : ''}`}
-                onClick={() => setAutoStartDayKey(dayKey)}
-                title={`Auto-generate from ${dayLabel}`}
-              >
+              <div className={`weekly-day-header ${autoStartDayKey === dayKey ? 'is-start-day' : ''}`}>
                 <div className="weekly-day-title">{dayLabel}</div>
                 <div className="weekly-range-label">{(groupedRows[dayKey] || []).length} recipes | {dayLoadMap[dayKey] || 0}/{Math.round(Number(dailyHours || 0) * 60)} min</div>
               </div>
@@ -1032,14 +1080,6 @@ const WeeklyScheduleBoard = ({
                         <article
                           key={entry.id}
                           className={`weekly-tab-card ${isActive ? 'is-active' : ''} ${draggingEntryId === entry.id ? 'is-dragging' : ''}`}
-                          draggable={canEdit}
-                          onDragStart={canEdit ? (e) => {
-                            setDraggingEntryId(entry.id);
-                            e.dataTransfer.effectAllowed = 'move';
-                            e.dataTransfer.setData('text/plain', String(entry.id));
-                            e.dataTransfer.setData('application/x-weekly-day', dayKey);
-                          } : undefined}
-                          onDragEnd={canEdit ? () => setDraggingEntryId(null) : undefined}
                           onDragOver={canEdit ? (e) => {
                             e.preventDefault();
                             if (draggingEntryId && draggingEntryId !== entry.id) {
@@ -1063,13 +1103,32 @@ const WeeklyScheduleBoard = ({
                             }
                           } : undefined}
                         >
-                          <button
-                            type="button"
-                            className={`weekly-tab-button ${isActive ? 'is-active' : ''}`}
-                            onClick={() => setActiveEntryByDay((prev) => ({ ...prev, [dayKey]: prev[dayKey] === entry.id ? null : entry.id }))}
-                          >
-                            {translateIngredient(entry.recipe_name)}
-                          </button>
+                          <div className="weekly-tab-header">
+                            {canEdit ? (
+                              <button
+                                type="button"
+                                className="weekly-drag-handle"
+                                draggable
+                                onDragStart={(e) => {
+                                  setDraggingEntryId(entry.id);
+                                  e.dataTransfer.effectAllowed = 'move';
+                                  e.dataTransfer.setData('text/plain', String(entry.id));
+                                  e.dataTransfer.setData('application/x-weekly-day', dayKey);
+                                }}
+                                onDragEnd={() => setDraggingEntryId(null)}
+                                title="Drag to move recipe"
+                              >
+                                <GripVertical size={14} />
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              className={`weekly-tab-button ${isActive ? 'is-active' : ''}`}
+                              onClick={() => setActiveEntryByDay((prev) => ({ ...prev, [dayKey]: prev[dayKey] === entry.id ? null : entry.id }))}
+                            >
+                              {translateIngredient(entry.recipe_name)}
+                            </button>
+                          </div>
 
                           {isActive ? (
                             <div className="weekly-card">
@@ -1087,6 +1146,45 @@ const WeeklyScheduleBoard = ({
                                   </div>
                                 ) : null}
                               </div>
+
+                              {canEdit ? (
+                                <div className="weekly-target-grid">
+                                  <label className="weekly-target-field">
+                                    <span className="weekly-target-label">Target Weight (g)</span>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="1"
+                                      className="weekly-target-input"
+                                      value={entry.target_weight ?? ''}
+                                      onChange={(e) => {
+                                        const nextValue = e.target.value;
+                                        setScheduleRows((prev) => prev.map((row) => (
+                                          row.id === entry.id ? { ...row, target_weight: nextValue === '' ? null : Number(nextValue) } : row
+                                        )));
+                                      }}
+                                      onBlur={(e) => updateEntryTargets(entry.id, { target_weight: e.target.value })}
+                                    />
+                                  </label>
+                                  <label className="weekly-target-field">
+                                    <span className="weekly-target-label">Target Portions</span>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="1"
+                                      className="weekly-target-input"
+                                      value={entry.target_portions ?? ''}
+                                      onChange={(e) => {
+                                        const nextValue = e.target.value;
+                                        setScheduleRows((prev) => prev.map((row) => (
+                                          row.id === entry.id ? { ...row, target_portions: nextValue === '' ? null : Number(nextValue) } : row
+                                        )));
+                                      }}
+                                      onBlur={(e) => updateEntryTargets(entry.id, { target_portions: e.target.value })}
+                                    />
+                                  </label>
+                                </div>
+                              ) : null}
 
                               {canEdit ? (
                                 <textarea

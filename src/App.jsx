@@ -1247,8 +1247,20 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
     return (parseFloat(batchCount) || 0) * perBatchTarget;
   }, [coreSettings, getStandardBatchYield]);
 
-  // SHARED STATE: Initialized with Base Yields
-  const [planIntent, setPlanIntent] = useState({});
+  const planIntentStorageKey = `sop_plan_intent_${clientSlug || 'kabile'}`;
+
+  // SHARED STATE: Persist selected scale targets until the user changes them.
+  const [planIntent, setPlanIntent] = useState(() => {
+    try {
+      const cached = localStorage.getItem(planIntentStorageKey);
+      if (!cached) return {};
+      const parsed = JSON.parse(cached);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (error) {
+      console.error('Plan intent cache parse failed:', error);
+      return {};
+    }
+  });
 
   const normalizeRecipeRow = useCallback((row, legacyMap, normalize) => {
     const normName = normalize(row.recipe_name || row.dish_name);
@@ -1375,6 +1387,14 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
       }
     }
   }, [recipes, volumeFocus]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(planIntentStorageKey, JSON.stringify(planIntent || {}));
+    } catch (error) {
+      console.error('Plan intent cache save failed:', error);
+    }
+  }, [planIntent, planIntentStorageKey]);
 
   // Apply Static Theme & Dynamic Brand Colors
   useEffect(() => {
@@ -2077,6 +2097,10 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
         time_profile: draft?.timeProfile || null,
         pattern: draft?.meta?.pattern || null,
         scale_profile: draft?.meta?.scaleProfile || null,
+        selected_scale_factor: Number(rootScaleFactor?.toFixed?.(4) || rootScaleFactor || 1),
+        selected_target_yield: Number(currentYieldValue || 0) || null,
+        selected_target_portions: Number(displayTargetPortions || 0) || null,
+        selected_yield_unit: activeRecipe?.unit || 'g',
         source: 'scaler_generator'
       }
     };
@@ -2096,7 +2120,7 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
     }
 
     window.alert('Prep instructions saved to board.');
-  }, [activeRecipe, clientSlug, currentYieldValue, isBulkMode, rootScaleFactor]);
+  }, [activeRecipe, clientSlug, currentYieldValue, displayTargetPortions, isBulkMode, rootScaleFactor]);
 
   const updateRecipeMethodStep = useCallback((idx, value, bulk = false) => {
     const source = bulk ? (activeRecipe?.bulkMethod || []) : (activeRecipe?.method || []);
