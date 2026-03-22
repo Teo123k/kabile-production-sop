@@ -3114,6 +3114,12 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
 	              <div className="flex min-w-0 flex-wrap items-center gap-1.5 xl:shrink-0">
 	                {canEdit && !showDeleted && filteredRecipesList.length > 0 && activeRecipe && !isEditMode && (
                     <>
+                      <button
+                        onClick={() => setIsAddRecipeOpen(true)}
+                        className="flex items-center gap-1 px-2 py-1.5 bg-app-bg text-app-accent hover:border-app-accent border border-app-accent/20 rounded-lg text-[9px] font-black uppercase transition-all"
+                      >
+                        <Plus size={11} /> Add Recipe
+                      </button>
 	                  <button
 	                    onClick={handleEnterEditMode}
 	                    className="flex items-center gap-1 px-2 py-1.5 bg-app-accent text-app-bg hover:scale-105 active:scale-95 rounded-lg text-[9px] font-black uppercase transition-all shadow-lg shadow-app-accent/20"
@@ -3176,7 +3182,7 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
                       </button>
                     </>
 	                )}
-                  {saveMessage && (
+                  {saveMessage && saveState === 'error' && (
                     <div className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase border ${saveState === 'error' ? 'bg-red-500/10 text-red-300 border-red-500/20' : saveState === 'saved' ? 'bg-app-accent/10 text-app-accent border-app-accent/20' : 'bg-app-bg text-app-muted border-app-border'}`}>
                       {saveMessage}
                     </div>
@@ -3271,8 +3277,8 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
 		                      <ChefHat size={18} />
 		                    </div>
 			                    <div className="relative flex-1 min-w-0 z-30">
-		                      <div className="flex items-start justify-between gap-3 mb-1">
-			                        <div className="relative flex-1">
+		                      <div className="mb-1 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+			                        <div className="relative min-w-0 flex-1">
 		                          {isEditMode ? (
 		                            <input
 	                              className="w-full bg-app-bg border border-app-accent/20 font-black text-lg text-app-text outline-none px-2 py-1 rounded-lg focus:border-app-accent"
@@ -3332,15 +3338,7 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
 		                        </div>
 
 	                        {/* ACTIONS MOVED HERE */}
-		                        <div className="flex items-center gap-1 shrink-0">
-                              {canEdit ? (
-                                <button
-                                  onClick={() => setIsAddRecipeOpen(true)}
-                                  className="flex items-center gap-1 px-2.5 py-1.5 bg-app-accent/10 text-app-accent hover:bg-app-accent hover:text-app-bg border border-app-accent/20 rounded-lg text-[8px] font-black uppercase transition-all"
-                                >
-                                  <Plus size={11} /> Add Recipe
-                                </button>
-                              ) : null}
+		                        <div className="flex shrink-0 items-center gap-1 self-start sm:pl-2">
 		                          {canEdit && showDeleted ? (
 		                            <button
 		                              onClick={() => handleRestore(activeRecipe.id)}
