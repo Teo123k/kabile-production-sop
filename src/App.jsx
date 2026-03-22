@@ -33,6 +33,7 @@ import {
   Save,
   Undo2,
   Pencil,
+  Plus,
   RotateCcw,
   Maximize2,
   Timer,
@@ -231,6 +232,133 @@ const getRecipeGroupLabel = (recipe = {}) => {
     SALAD_IDS.has(recipe.id) ? 'Salad' :
     KIMCHI_IDS.has(recipe.id) ? 'Kimchi' :
     'Foundation Prep';
+};
+
+const slugifyRecipeId = (value = '') => (
+  String(value || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+);
+
+const persistIngredientCategoryValue = (category) => {
+  const nextCategory = String(category || 'other').trim().toLowerCase();
+  if (nextCategory === 'wet / liquid' || nextCategory === 'wet' || nextCategory === 'liquid') return 'wet';
+  return nextCategory || 'other';
+};
+
+const inferIngredientCategory = (name = '', unit = '') => {
+  const combined = `${name} ${unit}`.toLowerCase();
+  if (/(water|stock|vinegar|soy sauce|fish sauce|mirin|oil|juice|milk|cream|liquid|wine)/.test(combined)) return 'wet';
+  if (/(salt|sugar|pepper|paprika|powder|spice|msg|seasoning|starch|flour)/.test(combined)) return 'dry';
+  if (/(butter|oil|fat|sesame oil|chicken oil)/.test(combined)) return 'fat';
+  if (/(chicken|beef|pork|tofu|fish|prawn|shrimp|meat)/.test(combined)) return 'protein';
+  if (/(garlic|ginger|onion|scallion|shallot|chili|apple|carrot|cabbage|vegetable|veg)/.test(combined)) return 'aromatic';
+  if (/(g|kg|ml|l)/.test(String(unit).toLowerCase())) return 'base';
+  return 'other';
+};
+
+const inferRecipeDraftMeta = (title = '') => {
+  const lower = String(title || '').toLowerCase();
+  if (/(brine|marinade)/.test(lower)) {
+    return { portion_class: 'marinade', dishStyle: 'marinade', selectorGroup: 'Marinade / Pre-Prep' };
+  }
+  if (/(mayo|aioli|dressing|sauce|glaze)/.test(lower)) {
+    return { portion_class: 'component', dishStyle: 'component', selectorGroup: 'Foundation Prep' };
+  }
+  if (/(kimchi)/.test(lower)) {
+    return { portion_class: 'component', dishStyle: 'component', selectorGroup: 'Kimchi', cuisine: 'Korean' };
+  }
+  if (/(katsu|curry)/.test(lower)) {
+    return { portion_class: 'curry', dishStyle: 'curry', selectorGroup: 'Katsu Curry System', cuisine: 'Japanese' };
+  }
+  if (/(salad|slaw)/.test(lower)) {
+    return { portion_class: 'salad', dishStyle: 'salad', selectorGroup: 'Salad' };
+  }
+  if (/(rice|udon|noodle|japchae)/.test(lower)) {
+    return { portion_class: 'main_carb', dishStyle: 'main_carb', selectorGroup: 'Main + Carb Dish' };
+  }
+  if (/(chicken|beef|pork|meat)/.test(lower)) {
+    return { portion_class: 'meat_stir_fry', dishStyle: 'meat_stir_fry', selectorGroup: 'Main Meat Dish' };
+  }
+  return { portion_class: 'component', dishStyle: 'component', selectorGroup: '' };
+};
+
+const parseRecipePasteInput = (rawInput = '') => {
+  const rawText = String(rawInput || '')
+    .replace(/\t/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const lines = String(rawInput || '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\t/g, ' ').trim())
+    .filter(Boolean);
+
+  if (!rawText && lines.length === 0) {
+    return null;
+  }
+
+  const titleBlockMatch = rawText.match(/^(.*?)\s*\((\d+(?:\.\d+)?)\s*(kg|g|ml|l)\b[^)]*\)/i);
+  const firstLine = lines[0] || rawText;
+  const simpleTitleMatch = firstLine.match(/^(.*?)\s*\((\d+(?:\.\d+)?)\s*(kg|g|ml|l)\b[^)]*\)\s*$/i);
+  const titleMatch = titleBlockMatch || simpleTitleMatch;
+  const recipeTitle = String(titleMatch ? titleMatch[1] : firstLine)
+    .replace(/ingredient\s*weight.*$/i, '')
+    .trim();
+  const baseYield = titleMatch ? Number(titleMatch[2]) : 1;
+  const yieldUnit = titleMatch ? titleMatch[3].toLowerCase() : 'kg';
+  const inferredMeta = inferRecipeDraftMeta(recipeTitle);
+
+  const titleSegment = titleMatch ? titleMatch[0] : firstLine;
+  const remainingRaw = rawText.startsWith(titleSegment)
+    ? rawText.slice(titleSegment.length).trim()
+    : rawText.replace(titleSegment, '').trim();
+
+  const ingredientSource = (remainingRaw || lines.slice(1).join(' ') || rawText)
+    .replace(/ingredient\s*weight/ig, ' ')
+    .replace(/ingredientweight/ig, ' ')
+    .replace(/ingredients?/ig, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/\b(kg|g|ml|l|tbsp|tsp|pcs|pc|each)\b(?=[A-Z])/g, '$1\n')
+    .replace(/\b(kg|g|ml|l|tbsp|tsp|pcs|pc|each)\b(?=[A-Z][a-z])/g, '$1\n')
+    .replace(/([a-z\)])(\d+(?:\.\d+)?\s*(?:kg|g|ml|l|tbsp|tsp|pcs|pc|each)\b)/g, '$1 $2')
+    .trim();
+
+  const ingredientRegex = /([A-Za-z][A-Za-z0-9/&,'().+\- ]*?)\s*(\d+(?:\.\d+)?)\s*(kg|g|ml|l|tbsp|tsp|pcs|pc|each)\b/gi;
+  const ingredients = [];
+  let match;
+  while ((match = ingredientRegex.exec(ingredientSource)) !== null) {
+    const name = String(match[1] || '').replace(/\s+/g, ' ').trim();
+    const qty = Number(match[2]);
+    const unit = String(match[3] || '').toLowerCase();
+    if (!name || !Number.isFinite(qty)) continue;
+    const category = inferIngredientCategory(name, unit);
+    ingredients.push({
+      name,
+      sku: slugifyRecipeId(name).toUpperCase() || 'NO-LINK',
+      qty,
+      unit,
+      category,
+      cat: category
+    });
+  }
+
+  return {
+    name: recipeTitle || 'New Recipe',
+    baseYield: Number.isFinite(baseYield) && baseYield > 0 ? baseYield : 1,
+    unit: yieldUnit || 'kg',
+    ingredients,
+    method: ['Add instruction.'],
+    bulkMethod: [],
+    scalingTips: inferredMeta.selectorGroup ? { selectorGroup: inferredMeta.selectorGroup } : {},
+    show_on_board: true,
+    cuisine: inferredMeta.cuisine || '',
+    occasion: '',
+    portion_class: inferredMeta.portion_class,
+    dishStyle: inferredMeta.dishStyle
+  };
 };
 
 const LIQUID_INGREDIENT_KEYWORDS = [
@@ -909,6 +1037,11 @@ const summarizeInstructionSteps = (steps = []) => {
 const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, role = 'viewer' }) => {
   useEffect(() => { console.log("CORE_LOGIC_DEFENSIVE_UPGRADE_V5_17:45"); }, []);
   const [recipes, setRecipes] = useState([]);
+  const [isAddRecipeOpen, setIsAddRecipeOpen] = useState(false);
+  const [addRecipeMode, setAddRecipeMode] = useState('paste');
+  const [newRecipeTitle, setNewRecipeTitle] = useState('');
+  const [newRecipePaste, setNewRecipePaste] = useState('');
+  const [isCreatingRecipe, setIsCreatingRecipe] = useState(false);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState('scaler');
   const [lastDeletedIngredient, setLastDeletedIngredient] = useState(null);
@@ -1598,6 +1731,94 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
     return value;
   }, []);
 
+  const handleCreateRecipe = useCallback(async () => {
+    const recipeDraft = addRecipeMode === 'blank'
+      ? {
+        name: (newRecipeTitle || '').trim() || 'New Recipe',
+        baseYield: 1,
+        unit: 'kg',
+        ingredients: [],
+        method: ['Add instruction.'],
+        bulkMethod: [],
+        scalingTips: {},
+        show_on_board: true,
+        cuisine: '',
+        occasion: '',
+        portion_class: 'component',
+        dishStyle: 'component'
+      }
+      : parseRecipePasteInput(newRecipePaste);
+
+    if (!recipeDraft?.name) {
+      window.alert('Add a recipe title or paste a recipe first.');
+      return;
+    }
+    if (addRecipeMode === 'paste' && (!Array.isArray(recipeDraft.ingredients) || recipeDraft.ingredients.length === 0)) {
+      window.alert('Could not detect ingredients from the pasted recipe. Try the blank template or add clearer ingredient weights.');
+      return;
+    }
+
+    const baseId = slugifyRecipeId(recipeDraft.name) || `recipe-${Date.now()}`;
+    let recipeId = baseId;
+    let collisionIndex = 2;
+    while (recipes.some((recipe) => recipe.id === recipeId)) {
+      recipeId = `${baseId}-${collisionIndex}`;
+      collisionIndex += 1;
+    }
+
+    const inferredGroup = recipeDraft.scalingTips?.selectorGroup || '';
+    const insertPayload = {
+      client_id: clientSlug || 'kabile',
+      recipe_id: recipeId,
+      recipe_name: recipeDraft.name,
+      ingredients: sanitizeJsonValue(recipeDraft.ingredients || []),
+      method: sanitizeJsonValue(recipeDraft.method || ['Add instruction.']),
+      bulk_method: sanitizeJsonValue(recipeDraft.bulkMethod || []),
+      scaling_tips: sanitizeJsonValue(recipeDraft.scalingTips || {}),
+      show_on_board: !!recipeDraft.show_on_board,
+      cuisine: recipeDraft.cuisine || '',
+      occasion: recipeDraft.occasion || '',
+      yield_unit: recipeDraft.unit || 'kg',
+      base_yield: Number(recipeDraft.baseYield) || 1,
+      portion_class: recipeDraft.portion_class || 'component',
+      dish_style: recipeDraft.dishStyle || 'component',
+      tier: inferredGroup || 'Tier 2 (Daily)',
+      is_deleted: false
+    };
+
+    try {
+      setIsCreatingRecipe(true);
+      const { data, error } = await supabase
+        .from('sop_recipes')
+        .insert(insertPayload)
+        .select('*')
+        .single();
+      if (error) throw error;
+
+      const normalize = (s) => (s || '').toLowerCase().trim().replace(/^\d+[\s.\-_]*/, '').replace(/[\s\-_]/g, '');
+      const normalizedRecipe = normalizeRecipeRow(data, new Map(), normalize);
+
+      setRecipes((prev) => {
+        const next = [...prev, normalizedRecipe].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+        localStorage.setItem(`sop_cache_${clientSlug || 'kabile'}`, JSON.stringify(next));
+        return next;
+      });
+      setSelectedId(normalizedRecipe.id);
+      setIsEditMode(true);
+      setIsAddRecipeOpen(false);
+      setAddRecipeMode('paste');
+      setNewRecipeTitle('');
+      setNewRecipePaste('');
+      setSaveState('saved');
+      setSaveMessage('Recipe created');
+    } catch (err) {
+      console.error('Create recipe failed:', err);
+      window.alert(`Create recipe failed: ${err?.message || 'Unable to add recipe.'}`);
+    } finally {
+      setIsCreatingRecipe(false);
+    }
+  }, [addRecipeMode, clientSlug, newRecipePaste, newRecipeTitle, normalizeRecipeRow, recipes, sanitizeJsonValue]);
+
   const handleUpdateRecipe = async () => {
     if (!activeRecipe) return false;
     try {
@@ -1727,6 +1948,8 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
         ...(activeRecipe?.scalingTips || {}),
         regular: draft.regular,
         largeScale: draft.largeScale,
+        prepMinutes: draft.estimatedMinutes,
+        prepTimeProfile: draft.timeProfile,
         generatedPrep: draft
       }
     });
@@ -1850,6 +2073,8 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
       generated_prep: {
         regular: activeRecipe.scalingTips?.regular || draft?.regular || '',
         bulk_warning: activeRecipe.scalingTips?.largeScale || draft?.largeScale || '',
+        estimated_minutes: draft?.estimatedMinutes || null,
+        time_profile: draft?.timeProfile || null,
         pattern: draft?.meta?.pattern || null,
         scale_profile: draft?.meta?.scaleProfile || null,
         source: 'scaler_generator'
@@ -2480,10 +2705,92 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
   );
 
   if (recipes.length === 0) return (
-    <div className="min-h-screen bg-app-bg text-app-muted flex flex-col items-center justify-center font-black uppercase tracking-widest gap-4">
+    <div className="min-h-screen bg-app-bg text-app-muted flex flex-col items-center justify-center font-black uppercase tracking-widest gap-4 px-4">
       <ChefHat size={48} className="opacity-20" />
       <span>No Recipes Found for {clientSlug || 'kabile'}</span>
-      <p className="text-[10px] font-bold normal-case opacity-40">Verify client_id in consulting_sops table</p>
+      <p className="text-[10px] font-bold normal-case opacity-40">Create the first recipe from a blank template or paste format.</p>
+      {canEdit ? (
+        <button
+          type="button"
+          onClick={() => setIsAddRecipeOpen(true)}
+          className="rounded-xl bg-app-accent px-4 py-2 text-[10px] font-black uppercase tracking-widest text-app-bg transition-all hover:brightness-110"
+        >
+          Add Recipe
+        </button>
+      ) : null}
+
+      {isAddRecipeOpen && canEdit && (
+        <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-3xl rounded-2xl border border-app-border bg-app-surface shadow-2xl">
+            <div className="flex items-center justify-between gap-3 border-b border-app-border px-5 py-4">
+              <div>
+                <h3 className="text-sm font-black uppercase tracking-widest text-app-accent">Add Recipe</h3>
+                <p className="mt-1 text-[11px] text-app-muted">Paste a raw recipe or start from a blank scaler template.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAddRecipeOpen(false);
+                  setAddRecipeMode('paste');
+                  setNewRecipeTitle('');
+                  setNewRecipePaste('');
+                }}
+                className="rounded-lg border border-app-border bg-app-bg px-3 py-2 text-[9px] font-black uppercase tracking-widest text-app-text hover:border-app-accent"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="space-y-4 px-5 py-5">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAddRecipeMode('paste')}
+                  className={`rounded-lg border px-3 py-2 text-[10px] font-black uppercase tracking-widest transition-all ${addRecipeMode === 'paste' ? 'border-app-accent bg-app-accent/10 text-app-accent' : 'border-app-border bg-app-bg text-app-text'}`}
+                >
+                  Paste Recipe
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAddRecipeMode('blank')}
+                  className={`rounded-lg border px-3 py-2 text-[10px] font-black uppercase tracking-widest transition-all ${addRecipeMode === 'blank' ? 'border-app-accent bg-app-accent/10 text-app-accent' : 'border-app-border bg-app-bg text-app-text'}`}
+                >
+                  Blank Template
+                </button>
+              </div>
+
+              {addRecipeMode === 'paste' ? (
+                <textarea
+                  rows={12}
+                  value={newRecipePaste}
+                  onChange={(e) => setNewRecipePaste(e.target.value)}
+                  placeholder={`Master Brine Mix (1 kg Liquid)\nIngredient Weight\nWater (Ice Cold) 800 g\nFine Sea Salt 56 g\nFish Sauce (Clear) 48 g\nGarlic/Ginger Juice (Strained) 80 g\nSugar 16 g`}
+                  className="w-full rounded-xl border border-app-border bg-app-bg px-4 py-3 text-[12px] leading-relaxed text-app-text outline-none focus:border-app-accent"
+                />
+              ) : (
+                <input
+                  value={newRecipeTitle}
+                  onChange={(e) => setNewRecipeTitle(e.target.value)}
+                  placeholder="Recipe title"
+                  className="w-full rounded-xl border border-app-border bg-app-bg px-4 py-3 text-[12px] font-bold text-app-text outline-none focus:border-app-accent"
+                />
+              )}
+            </div>
+
+            <div className="flex items-center justify-between gap-3 border-t border-app-border px-5 py-4">
+              <div className="text-[10px] text-app-muted">The new recipe will open in the normal scaler editor after creation.</div>
+              <button
+                type="button"
+                onClick={handleCreateRecipe}
+                disabled={isCreatingRecipe || (addRecipeMode === 'blank' ? !newRecipeTitle.trim() : !newRecipePaste.trim())}
+                className="rounded-xl bg-app-accent px-4 py-2 text-[10px] font-black uppercase tracking-widest text-app-bg transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isCreatingRecipe ? 'Creating...' : 'Create Recipe'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 
@@ -2539,6 +2846,91 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
         </div>
         </div>
       </nav>
+
+      {isAddRecipeOpen && canEdit && (
+        <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-3xl rounded-2xl border border-app-border bg-app-surface shadow-2xl">
+            <div className="flex items-center justify-between gap-3 border-b border-app-border px-5 py-4">
+              <div>
+                <h3 className="text-sm font-black uppercase tracking-widest text-app-accent">Add Recipe</h3>
+                <p className="mt-1 text-[11px] text-app-muted">Paste a raw recipe or start from a blank scaler template.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAddRecipeOpen(false);
+                  setAddRecipeMode('paste');
+                  setNewRecipeTitle('');
+                  setNewRecipePaste('');
+                }}
+                className="rounded-lg border border-app-border bg-app-bg px-3 py-2 text-[9px] font-black uppercase tracking-widest text-app-text hover:border-app-accent"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="space-y-4 px-5 py-5">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAddRecipeMode('paste')}
+                  className={`rounded-lg border px-3 py-2 text-[10px] font-black uppercase tracking-widest transition-all ${addRecipeMode === 'paste' ? 'border-app-accent bg-app-accent/10 text-app-accent' : 'border-app-border bg-app-bg text-app-text'}`}
+                >
+                  Paste Recipe
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAddRecipeMode('blank')}
+                  className={`rounded-lg border px-3 py-2 text-[10px] font-black uppercase tracking-widest transition-all ${addRecipeMode === 'blank' ? 'border-app-accent bg-app-accent/10 text-app-accent' : 'border-app-border bg-app-bg text-app-text'}`}
+                >
+                  Blank Template
+                </button>
+              </div>
+
+              {addRecipeMode === 'paste' ? (
+                <div className="space-y-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-app-muted">
+                    Paste title and ingredients. The scaler will detect the recipe name and build ingredient rows automatically.
+                  </p>
+                  <textarea
+                    rows={12}
+                    value={newRecipePaste}
+                    onChange={(e) => setNewRecipePaste(e.target.value)}
+                    placeholder={`Master Brine Mix (1 kg Liquid)\nIngredient Weight\nWater (Ice Cold) 800 g\nFine Sea Salt 56 g\nFish Sauce (Clear) 48 g\nGarlic/Ginger Juice (Strained) 80 g\nSugar 16 g`}
+                    className="w-full rounded-xl border border-app-border bg-app-bg px-4 py-3 text-[12px] leading-relaxed text-app-text outline-none focus:border-app-accent"
+                  />
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-app-muted">
+                    Start with a blank recipe and fill in the scaler fields manually.
+                  </p>
+                  <input
+                    value={newRecipeTitle}
+                    onChange={(e) => setNewRecipeTitle(e.target.value)}
+                    placeholder="Recipe title"
+                    className="w-full rounded-xl border border-app-border bg-app-bg px-4 py-3 text-[12px] font-bold text-app-text outline-none focus:border-app-accent"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between gap-3 border-t border-app-border px-5 py-4">
+              <div className="text-[10px] text-app-muted">
+                After creating, the recipe opens in the normal scaler form so you can adjust category, cuisine, and instruction.
+              </div>
+              <button
+                type="button"
+                onClick={handleCreateRecipe}
+                disabled={isCreatingRecipe || (addRecipeMode === 'blank' ? !newRecipeTitle.trim() : !newRecipePaste.trim())}
+                className="rounded-xl bg-app-accent px-4 py-2 text-[10px] font-black uppercase tracking-widest text-app-bg transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isCreatingRecipe ? 'Creating...' : 'Create Recipe'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {view === 'board' ? (
         <div
@@ -2941,6 +3333,14 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
 
 	                        {/* ACTIONS MOVED HERE */}
 		                        <div className="flex items-center gap-1 shrink-0">
+                              {canEdit ? (
+                                <button
+                                  onClick={() => setIsAddRecipeOpen(true)}
+                                  className="flex items-center gap-1 px-2.5 py-1.5 bg-app-accent/10 text-app-accent hover:bg-app-accent hover:text-app-bg border border-app-accent/20 rounded-lg text-[8px] font-black uppercase transition-all"
+                                >
+                                  <Plus size={11} /> Add Recipe
+                                </button>
+                              ) : null}
 		                          {canEdit && showDeleted ? (
 		                            <button
 		                              onClick={() => handleRestore(activeRecipe.id)}

@@ -511,6 +511,16 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
         );
     };
 
+    const getEstimatedMinutes = useCallback((recipe) => {
+        const generatedMinutes = Number(
+            recipe?.data?.generated_prep?.estimated_minutes ||
+            recipe?.meta?.scalingTips?.prepMinutes ||
+            recipe?.meta?.scaling_tips?.prepMinutes ||
+            0
+        );
+        return Number.isFinite(generatedMinutes) && generatedMinutes > 0 ? generatedMinutes : 0;
+    }, []);
+
     const exportColumns = useMemo(() => ([
         { key: 'weekly', label: 'Foundation Prep' },
         { key: 'daily', label: 'Daily Prep' },
@@ -827,7 +837,9 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
             generated_prep: {
                 steps: draft.steps,
                 regular: draft.regular,
-                largeScale: draft.largeScale
+                largeScale: draft.largeScale,
+                estimated_minutes: draft.estimatedMinutes,
+                time_profile: draft.timeProfile
             }
         };
 
@@ -835,6 +847,8 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
             ...(recipe.meta?.scalingTips || recipe.meta?.scaling_tips || {}),
             regular: draft.regular,
             largeScale: draft.largeScale,
+            prepMinutes: draft.estimatedMinutes,
+            prepTimeProfile: draft.timeProfile,
             generatedPrep: draft
         };
 
@@ -1218,6 +1232,9 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                                                 <div className="recipe-header">
                                                     <div className="flex min-w-0 items-center gap-2">
                                                         <span className="recipe-name text-blue-400">{translateIngredient(r.dish_name)}</span>
+                                                        {getEstimatedMinutes(r) > 0 && (
+                                                            <span className="recipe-scale-flag">{getEstimatedMinutes(r)} min</span>
+                                                        )}
                                                         {getScheduleProfile(r) === 'high_volume' && (
                                                             <span data-testid={`board-scale-flag-${r.id}`} className="recipe-scale-flag"><ArrowUp size={11} /> Large</span>
                                                         )}
@@ -1278,6 +1295,9 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                                                 <div className="recipe-header">
                                                     <div className="flex min-w-0 items-center gap-2">
                                                         <span className="recipe-name text-amber-500">{translateIngredient(r.dish_name)}</span>
+                                                        {getEstimatedMinutes(r) > 0 && (
+                                                            <span className="recipe-scale-flag">{getEstimatedMinutes(r)} min</span>
+                                                        )}
                                                         {getScheduleProfile(r) === 'high_volume' && (
                                                             <span data-testid={`board-scale-flag-${r.id}`} className="recipe-scale-flag"><ArrowUp size={11} /> Large</span>
                                                         )}
@@ -1333,6 +1353,9 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                                                 <div className="recipe-header">
                                                     <div className="flex min-w-0 items-center gap-2">
                                                         <span className="recipe-name text-emerald-500">{translateIngredient(r.dish_name)}</span>
+                                                        {getEstimatedMinutes(r) > 0 && (
+                                                            <span className="recipe-scale-flag">{getEstimatedMinutes(r)} min</span>
+                                                        )}
                                                         {getScheduleProfile(r) === 'high_volume' && (
                                                             <span data-testid={`board-scale-flag-${r.id}`} className="recipe-scale-flag"><ArrowUp size={11} /> Large</span>
                                                         )}

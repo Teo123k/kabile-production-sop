@@ -58,6 +58,12 @@ const WeeklyScheduleBoard = ({
   const [editingTaskDrafts, setEditingTaskDrafts] = useState({});
   const [exportFormat, setExportFormat] = useState('pdf');
   const [loadError, setLoadError] = useState('');
+  const [dailyHours, setDailyHours] = useState(6);
+  const [isAutoGenerating, setIsAutoGenerating] = useState(false);
+  const [undoSnapshotRows, setUndoSnapshotRows] = useState(null);
+  const [isUndoingAutoGenerate, setIsUndoingAutoGenerate] = useState(false);
+  const [draggingEntryId, setDraggingEntryId] = useState(null);
+  const [autoStartDayKey, setAutoStartDayKey] = useState('mon');
 
   const normalize = useCallback((val) => (
     String(val || '')
@@ -80,6 +86,12 @@ const WeeklyScheduleBoard = ({
     return next;
   }, [boardRecords, normalize]);
 
+  const resolveRecipeRecord = useCallback((entry) => (
+    boardRecordMap.get(entry.recipe_id) ||
+    boardRecordMap.get(normalize(entry.recipe_name)) ||
+    null
+  ), [boardRecordMap, normalize]);
+
   const eligibleRecipes = useMemo(() => (
     filteredRecords
       .filter((record) => {
@@ -89,6 +101,34 @@ const WeeklyScheduleBoard = ({
       })
       .sort((a, b) => String(a.dish_name || '').localeCompare(String(b.dish_name || '')))
   ), [filteredRecords, portionTargets, productionTargets]);
+
+  const getEstimatedMinutes = useCallback((record) => {
+    const value = Number(
+      record?.data?.generated_prep?.estimated_minutes ||
+      record?.meta?.scalingTips?.prepMinutes ||
+      record?.meta?.scaling_tips?.prepMinutes ||
+      0
+    );
+    return Number.isFinite(value) && value > 0 ? value : 20;
+  }, []);
+
+  const getCategoryPriority = useCallback((record) => {
+    const combined = String([
+      record?.dish_name,
+      record?.meta?.dishStyle,
+      record?.meta?.dishCategory,
+      record?.meta?.portion_class,
+      record?.meta?.scalingTips?.selectorGroup,
+      record?.meta?.scaling_tips?.selectorGroup
+    ].filter(Boolean).join(' ')).toLowerCase();
+
+    if (/(foundation|roux|stock|base|kimchi base|master sauce|prep base|long-life)/.test(combined)) return 0;
+    if (/(marinade|marinated|brine|season chicken|season beef|season pork|meat marinade|protein marinade)/.test(combined)) return 1;
+    if (/(sauce|glaze|dressing|mayo|aioli|vinaigrette|kimchi mayo|gravy)/.test(combined)) return 2;
+    if (/(main meat dish|main dish|meat stir fry|main \+ carb|main_carb|curry|stew|braise|cook|roast|fry|grill|execution)/.test(combined)) return 3;
+    if (/(veg stir fry|salad|slaw|vegetable|side)/.test(combined)) return 4;
+    return 5;
+  }, []);
 
   const loadScheduleRows = useCallback(async () => {
     setLoading(true);
@@ -212,11 +252,17 @@ const WeeklyScheduleBoard = ({
     }
   }, []);
 
-  const resolveRecipeRecord = useCallback((entry) => (
-    boardRecordMap.get(entry.recipe_id) ||
-    boardRecordMap.get(normalize(entry.recipe_name)) ||
-    null
-  ), [boardRecordMap, normalize]);
+  const getEntryEstimatedMinutes = useCallback((entry) => {
+    const recipe = resolveRecipeRecord(entry);
+    return recipe ? getEstimatedMinutes(recipe) : 0;
+  }, [getEstimatedMinutes, resolveRecipeRecord]);
+
+  const dayLoadMap = useMemo(() => {
+    return Object.fromEntries(DAY_COLUMNS.map(([dayKey]) => [
+      dayKey,
+      (groupedRows[dayKey] || []).reduce((sum, entry) => sum + getEntryEstimatedMinutes(entry), 0)
+    ]));
+  }, [getEntryEstimatedMinutes, groupedRows]);
 
   const startEditingBox = useCallback((boxKey, tasks) => {
     const nextDrafts = {};
@@ -283,6 +329,29 @@ const WeeklyScheduleBoard = ({
     });
   }, [eligibleRecipes, groupedRows, recipeSearchByDay]);
 
+  const hasActiveScheduleTarget = useCallback((record) => {
+    const targetWeight = Number(productionTargets[record.id] || productionTargets[record.meta?.id] || 0);
+    const targetPortions = Number(portionTargets[record.id] || portionTargets[record.meta?.id] || 0);
+    return targetWeight > 0 || targetPortions > 0 || !!record.meta?.show_on_board;
+  }, [portionTargets, productionTargets]);
+
+  const hasBoardPrepTasks = useCallback((record) => {
+    const data = getBoardData(record);
+    return Boolean(
+      (Array.isArray(data?.weekly) && data.weekly.length > 0) ||
+      data?.weekly?.batch?.length > 0 ||
+      data?.weekly?.buffer?.length > 0 ||
+      (Array.isArray(data?.morning) && data.morning.length > 0) ||
+      data?.morning?.tasks?.length > 0 ||
+      data?.morning?.forward?.length > 0 ||
+      (Array.isArray(data?.service) && data.service.length > 0) ||
+      data?.service?.prep?.length > 0 ||
+      data?.service?.setup?.length > 0 ||
+      data?.service?.garnish?.length > 0 ||
+      data?.pre_service?.length > 0
+    );
+  }, [getBoardData]);
+
   const updateWeekNote = useCallback(async (entryId, nextNote) => {
     setScheduleRows((prev) => prev.map((row) => (
       row.id === entryId ? { ...row, week_note: nextNote } : row
@@ -299,6 +368,318 @@ const WeeklyScheduleBoard = ({
       await loadScheduleRows();
     }
   }, [loadScheduleRows]);
+
+  const persistDayOrder = useCallback(async (dayKey, orderedEntries) => {
+    const previousRows = scheduleRows.map((row) => ({ ...row }));
+    const normalizedEntries = orderedEntries.map((entry, index) => ({
+      ...entry,
+      day_key: dayKey,
+      sort_order: index
+    }));
+
+    setScheduleRows((prev) => {
+      const untouched = prev.filter((row) => row.day_key !== dayKey);
+      return [...untouched, ...normalizedEntries];
+    });
+
+    const updateResults = await Promise.all(
+      normalizedEntries.map((entry, index) => (
+        supabase
+          .from('weekly_prep_schedule')
+          .update({ day_key: dayKey, sort_order: index })
+          .eq('id', entry.id)
+      ))
+    );
+
+    const failed = updateResults.find((result) => result.error);
+    if (failed?.error) {
+      console.error('Weekly reorder failed:', failed.error);
+      window.alert(`Reorder failed: ${failed.error.message}`);
+      setScheduleRows(previousRows);
+    }
+  }, [scheduleRows]);
+
+  const reorderWithinDay = useCallback(async (dayKey, draggedId, targetId = null) => {
+    if (!draggedId) return;
+    const dayEntries = [...(groupedRows[dayKey] || [])];
+    const fromIndex = dayEntries.findIndex((entry) => entry.id === draggedId);
+    if (fromIndex < 0) return;
+
+    const [movedEntry] = dayEntries.splice(fromIndex, 1);
+    if (targetId == null) {
+      dayEntries.push(movedEntry);
+    } else {
+      const toIndex = dayEntries.findIndex((entry) => entry.id === targetId);
+      if (toIndex < 0) {
+        dayEntries.push(movedEntry);
+      } else {
+        dayEntries.splice(toIndex, 0, movedEntry);
+      }
+    }
+
+    const unchanged = dayEntries.every((entry, index) => entry.id === (groupedRows[dayKey] || [])[index]?.id);
+    if (unchanged) return;
+
+    await persistDayOrder(dayKey, dayEntries);
+  }, [groupedRows, persistDayOrder]);
+
+  const moveEntryAcrossDays = useCallback(async (fromDayKey, toDayKey, draggedId, targetId = null) => {
+    if (!draggedId || !fromDayKey || !toDayKey) return;
+    if (fromDayKey === toDayKey) {
+      await reorderWithinDay(toDayKey, draggedId, targetId);
+      return;
+    }
+
+    const sourceEntries = [...(groupedRows[fromDayKey] || [])];
+    const targetEntries = [...(groupedRows[toDayKey] || [])];
+    const fromIndex = sourceEntries.findIndex((entry) => entry.id === draggedId);
+    if (fromIndex < 0) return;
+
+    const [movedEntry] = sourceEntries.splice(fromIndex, 1);
+    const movedWithDay = { ...movedEntry, day_key: toDayKey };
+
+    if (targetId == null) {
+      targetEntries.push(movedWithDay);
+    } else {
+      const toIndex = targetEntries.findIndex((entry) => entry.id === targetId);
+      if (toIndex < 0) {
+        targetEntries.push(movedWithDay);
+      } else {
+        targetEntries.splice(toIndex, 0, movedWithDay);
+      }
+    }
+
+    const previousRows = scheduleRows.map((row) => ({ ...row }));
+    const normalizedSource = sourceEntries.map((entry, index) => ({
+      ...entry,
+      day_key: fromDayKey,
+      sort_order: index
+    }));
+    const normalizedTarget = targetEntries.map((entry, index) => ({
+      ...entry,
+      day_key: toDayKey,
+      sort_order: index
+    }));
+
+    setScheduleRows((prev) => {
+      const untouched = prev.filter((row) => row.day_key !== fromDayKey && row.day_key !== toDayKey);
+      return [...untouched, ...normalizedSource, ...normalizedTarget];
+    });
+
+    const updateResults = await Promise.all([
+      ...normalizedSource.map((entry, index) => (
+        supabase
+          .from('weekly_prep_schedule')
+          .update({ day_key: fromDayKey, sort_order: index })
+          .eq('id', entry.id)
+      )),
+      ...normalizedTarget.map((entry, index) => (
+        supabase
+          .from('weekly_prep_schedule')
+          .update({ day_key: toDayKey, sort_order: index })
+          .eq('id', entry.id)
+      ))
+    ]);
+
+    const failed = updateResults.find((result) => result.error);
+    if (failed?.error) {
+      console.error('Weekly move failed:', failed.error);
+      window.alert(`Move failed: ${failed.error.message}`);
+      setScheduleRows(previousRows);
+      return;
+    }
+
+    setActiveEntryByDay((prev) => ({
+      ...prev,
+      [toDayKey]: draggedId
+    }));
+  }, [groupedRows, reorderWithinDay, scheduleRows]);
+
+  const autoGenerateWeek = useCallback(async () => {
+    if (!canEdit) return;
+    const dayCapacity = Math.max(60, Math.round(Number(dailyHours || 0) * 60));
+    const startDayIndex = Math.max(0, DAY_COLUMNS.findIndex(([dayKey]) => dayKey === autoStartDayKey));
+    const scheduleDayColumns = DAY_COLUMNS.slice(startDayIndex);
+    const candidates = eligibleRecipes
+      .filter((record) => {
+        if (!hasActiveScheduleTarget(record)) return false;
+        return hasBoardPrepTasks(record);
+      })
+      .map((record) => ({
+        record,
+        estimatedMinutes: getEstimatedMinutes(record),
+        priority: getCategoryPriority(record)
+      }))
+      .sort((a, b) => {
+        if (a.priority !== b.priority) return a.priority - b.priority;
+        if (b.estimatedMinutes !== a.estimatedMinutes) return b.estimatedMinutes - a.estimatedMinutes;
+        return String(a.record.dish_name || '').localeCompare(String(b.record.dish_name || ''));
+      });
+
+    if (candidates.length === 0) {
+      window.alert('No scaled board recipes with prep tasks are ready for auto scheduling.');
+      return;
+    }
+
+    const previousRows = scheduleRows.map((row) => ({ ...row }));
+
+    if (previousRows.length > 0 && !window.confirm('Replace the current weekly schedule with a new auto-generated draft?')) {
+      return;
+    }
+
+    const remainingMinutes = Object.fromEntries(scheduleDayColumns.map(([dayKey]) => [dayKey, dayCapacity]));
+    const generatedRows = [];
+    let dayIndex = 0;
+
+    candidates.forEach(({ record, estimatedMinutes }) => {
+      const taskMinutes = Math.max(1, estimatedMinutes);
+      let selectedDayIndex = dayIndex;
+
+      while (
+        selectedDayIndex < scheduleDayColumns.length - 1 &&
+        remainingMinutes[scheduleDayColumns[selectedDayIndex][0]] < taskMinutes
+      ) {
+        selectedDayIndex += 1;
+      }
+
+      const selectedDayKey = scheduleDayColumns[selectedDayIndex][0];
+      dayIndex = selectedDayIndex;
+      remainingMinutes[selectedDayKey] = Math.max(0, remainingMinutes[selectedDayKey] - taskMinutes);
+
+      if (remainingMinutes[selectedDayKey] === 0 && dayIndex < scheduleDayColumns.length - 1) {
+        dayIndex += 1;
+      }
+
+      generatedRows.push({
+        client_id: clientId,
+        week_start: weekStart,
+        day_key: selectedDayKey,
+        recipe_id: record.id,
+        recipe_name: record.dish_name,
+        target_weight: Number(productionTargets[record.id] || productionTargets[record.meta?.id] || 0) || null,
+        target_portions: Number(portionTargets[record.id] || portionTargets[record.meta?.id] || 0) || null,
+        sort_order: generatedRows.filter((row) => row.day_key === selectedDayKey).length,
+        week_note: `${taskMinutes} min prep window`
+      });
+    });
+
+    setIsAutoGenerating(true);
+    const { error: deleteError } = await supabase
+      .from('weekly_prep_schedule')
+      .delete()
+      .eq('client_id', clientId)
+      .eq('week_start', weekStart);
+
+    if (deleteError) {
+      setIsAutoGenerating(false);
+      window.alert(`Auto-generate failed: ${deleteError.message}`);
+      return;
+    }
+
+    const { data, error: insertError } = await supabase
+      .from('weekly_prep_schedule')
+      .insert(generatedRows)
+      .select('*');
+
+    setIsAutoGenerating(false);
+
+    if (insertError) {
+      window.alert(`Auto-generate failed: ${insertError.message}`);
+      return;
+    }
+
+    setUndoSnapshotRows(previousRows);
+    setScheduleRows(data || []);
+  }, [
+    canEdit,
+    clientId,
+    dailyHours,
+    autoStartDayKey,
+    hasBoardPrepTasks,
+    hasActiveScheduleTarget,
+    eligibleRecipes,
+    getBoardData,
+    getCategoryPriority,
+    getEstimatedMinutes,
+    portionTargets,
+    productionTargets,
+    scheduleRows,
+    weekStart
+  ]);
+
+  const undoAutoGenerate = useCallback(async () => {
+    if (!canEdit || !Array.isArray(undoSnapshotRows)) return;
+
+    setIsUndoingAutoGenerate(true);
+    const { error: deleteError } = await supabase
+      .from('weekly_prep_schedule')
+      .delete()
+      .eq('client_id', clientId)
+      .eq('week_start', weekStart);
+
+    if (deleteError) {
+      setIsUndoingAutoGenerate(false);
+      window.alert(`Undo failed: ${deleteError.message}`);
+      return;
+    }
+
+    if (undoSnapshotRows.length === 0) {
+      setScheduleRows([]);
+      setUndoSnapshotRows(null);
+      setIsUndoingAutoGenerate(false);
+      return;
+    }
+
+    const restorePayload = undoSnapshotRows.map((row, index) => ({
+      client_id: row.client_id || clientId,
+      week_start: row.week_start || weekStart,
+      day_key: row.day_key,
+      recipe_id: row.recipe_id,
+      recipe_name: row.recipe_name,
+      target_weight: row.target_weight ?? null,
+      target_portions: row.target_portions ?? null,
+      sort_order: Number.isFinite(Number(row.sort_order)) ? Number(row.sort_order) : index,
+      week_note: row.week_note ?? null
+    }));
+
+    const { data, error: insertError } = await supabase
+      .from('weekly_prep_schedule')
+      .insert(restorePayload)
+      .select('*')
+      .order('day_key')
+      .order('sort_order');
+
+    setIsUndoingAutoGenerate(false);
+
+    if (insertError) {
+      window.alert(`Undo failed: ${insertError.message}`);
+      return;
+    }
+
+    setScheduleRows(data || []);
+    setUndoSnapshotRows(null);
+  }, [canEdit, clientId, undoSnapshotRows, weekStart]);
+
+  const resetWeekSchedule = useCallback(async () => {
+    if (!canEdit) return;
+    const previousRows = scheduleRows.map((row) => ({ ...row }));
+    if (previousRows.length === 0) return;
+    if (!window.confirm('Clear the current weekly schedule?')) return;
+
+    const { error } = await supabase
+      .from('weekly_prep_schedule')
+      .delete()
+      .eq('client_id', clientId)
+      .eq('week_start', weekStart);
+
+    if (error) {
+      window.alert(`Reset failed: ${error.message}`);
+      return;
+    }
+
+    setUndoSnapshotRows(previousRows);
+    setScheduleRows([]);
+  }, [canEdit, clientId, scheduleRows, weekStart]);
 
   const scrollDays = useCallback((direction) => {
     const node = daysScrollerRef.current;
@@ -468,6 +849,9 @@ const WeeklyScheduleBoard = ({
         .weekly-button-accent { border-color: rgba(212, 175, 55, 0.25); background: rgba(212, 175, 55, 0.12); color: var(--app-accent); }
         .weekly-date-input { border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 12px; padding: 10px 12px; font-size: 10px; font-weight: 900; text-transform: uppercase; }
         .weekly-range-label { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+        .weekly-hours-input { width: 84px; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 12px; padding: 10px 12px; font-size: 10px; font-weight: 900; text-transform: uppercase; text-align: center; }
+        .weekly-hours-group { display: flex; align-items: center; gap: 8px; }
+        .weekly-hours-label { font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
         .weekly-grid-shell { display: flex; align-items: stretch; gap: 10px; min-height: 0; }
         .weekly-grid-nav { width: 24px; flex: 0 0 24px; border: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.02); color: rgba(255,255,255,0.28); border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s; opacity: 0.45; }
         .weekly-grid-shell:hover .weekly-grid-nav { opacity: 0.7; }
@@ -476,7 +860,8 @@ const WeeklyScheduleBoard = ({
         .weekly-grid { display: flex; gap: 14px; overflow-x: auto; overflow-y: hidden; padding-bottom: 8px; scroll-behavior: smooth; scrollbar-width: none; -ms-overflow-style: none; }
         .weekly-grid::-webkit-scrollbar { display: none; }
         .weekly-day-column { flex: 0 0 calc((100% - 12px) / 4); border: 1px solid var(--border); background: var(--surface-low); border-radius: 16px; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 220px; min-width: 280px; max-height: calc(100vh - 260px); }
-        .weekly-day-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .weekly-day-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; }
+        .weekly-day-header.is-start-day .weekly-day-title { color: var(--app-accent); }
         .weekly-day-title { font-size: 12px; font-weight: 900; text-transform: uppercase; color: var(--text); }
         .weekly-add-row { display: flex; gap: 8px; align-items: center; }
         .weekly-picker-overlay { position: fixed; inset: 0; background: rgba(9, 9, 11, 0.64); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 1200; }
@@ -495,6 +880,8 @@ const WeeklyScheduleBoard = ({
         .weekly-tab-list::-webkit-scrollbar { display: none; }
         .weekly-tab-card { border: 1px solid var(--border); background: var(--surface); border-radius: 14px; overflow: hidden; transition: all 0.2s; }
         .weekly-tab-card.is-active { border-color: rgba(212,175,55,0.26); box-shadow: 0 10px 28px rgba(0,0,0,0.18); }
+        .weekly-tab-card.is-dragging { opacity: 0.45; transform: scale(0.98); }
+        .weekly-tab-card.is-drop-target { border-color: rgba(212,175,55,0.45); box-shadow: 0 0 0 1px rgba(212,175,55,0.28); }
         .weekly-tab-button { width: 100%; text-align: left; border: none; background: transparent; color: var(--muted); padding: 10px 12px; font-size: 10px; font-weight: 800; text-transform: uppercase; transition: all 0.2s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .weekly-tab-button:hover { border-color: var(--app-accent); color: var(--text); }
         .weekly-tab-button.is-active { border-color: rgba(212,175,55,0.28); background: rgba(212,175,55,0.1); color: var(--app-accent); }
@@ -536,6 +923,50 @@ const WeeklyScheduleBoard = ({
             <div className="weekly-range-label"><CalendarDays size={14} className="inline mr-2" />{weekRangeLabel}</div>
           </div>
           <div className="flex items-center gap-2">
+            {canEdit ? (
+              <>
+                <div className="weekly-hours-group">
+                  <span className="weekly-hours-label">Daily Hours</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="12"
+                    step="0.5"
+                    value={dailyHours}
+                    className="weekly-hours-input"
+                    onChange={(e) => setDailyHours(Math.max(1, Number(e.target.value) || 1))}
+                    title="Daily prep hours"
+                  />
+                </div>
+                <button
+                  className="weekly-button weekly-button-accent"
+                  onClick={autoGenerateWeek}
+                  disabled={isAutoGenerating}
+                  title={`Generate from ${DAY_COLUMNS.find(([dayKey]) => dayKey === autoStartDayKey)?.[1] || 'Monday'}`}
+                >
+                  <CalendarDays size={14} className="inline mr-1" />
+                  {isAutoGenerating ? 'Generating...' : 'Auto Generate'}
+                </button>
+                {undoSnapshotRows ? (
+                  <button
+                    className="weekly-button"
+                    onClick={undoAutoGenerate}
+                    disabled={isUndoingAutoGenerate}
+                  >
+                    <ChevronLeft size={14} className="inline mr-1" />
+                    {isUndoingAutoGenerate ? 'Undoing...' : 'Undo Auto'}
+                  </button>
+                ) : null}
+                <button
+                  className="weekly-button"
+                  onClick={resetWeekSchedule}
+                  disabled={scheduleRows.length === 0}
+                >
+                  <X size={14} className="inline mr-1" />
+                  Reset Week
+                </button>
+              </>
+            ) : null}
             <button className={`weekly-button ${exportFormat === 'pdf' ? 'weekly-button-accent' : ''}`} onClick={() => setExportFormat('pdf')}>PDF</button>
             <button className={`weekly-button ${exportFormat === 'csv' ? 'weekly-button-accent' : ''}`} onClick={() => setExportFormat('csv')}>CSV</button>
             <button className="weekly-button weekly-button-accent" onClick={() => (exportFormat === 'csv' ? exportCsv() : openPrintView())}>
@@ -559,9 +990,13 @@ const WeeklyScheduleBoard = ({
             <div className="weekly-grid" ref={daysScrollerRef}>
               {DAY_COLUMNS.map(([dayKey, dayLabel]) => (
             <section key={dayKey} className="weekly-day-column">
-              <div className="weekly-day-header">
+              <div
+                className={`weekly-day-header ${autoStartDayKey === dayKey ? 'is-start-day' : ''}`}
+                onClick={() => setAutoStartDayKey(dayKey)}
+                title={`Auto-generate from ${dayLabel}`}
+              >
                 <div className="weekly-day-title">{dayLabel}</div>
-                <div className="weekly-range-label">{(groupedRows[dayKey] || []).length} recipes</div>
+                <div className="weekly-range-label">{(groupedRows[dayKey] || []).length} recipes | {dayLoadMap[dayKey] || 0}/{Math.round(Number(dailyHours || 0) * 60)} min</div>
               </div>
 
               {canEdit ? (
@@ -574,13 +1009,60 @@ const WeeklyScheduleBoard = ({
               {(groupedRows[dayKey] || []).length === 0 ? (
                 <div className="weekly-empty">No prep recipes scheduled</div>
               ) : (
-                <div className="weekly-day-body">
+                <div
+                  className="weekly-day-body"
+                  onDragOver={canEdit ? (e) => e.preventDefault() : undefined}
+                  onDrop={canEdit ? async (e) => {
+                    e.preventDefault();
+                    const draggedId = e.dataTransfer.getData('text/plain');
+                    const sourceDayKey = e.dataTransfer.getData('application/x-weekly-day');
+                    setDraggingEntryId(null);
+                    if (sourceDayKey && sourceDayKey !== dayKey) {
+                      await moveEntryAcrossDays(sourceDayKey, dayKey, draggedId, null);
+                    } else {
+                      await reorderWithinDay(dayKey, draggedId, null);
+                    }
+                  } : undefined}
+                >
                   <div className="weekly-tab-list">
                     {(groupedRows[dayKey] || []).map((entry) => {
                       const isActive = activeEntryByDay[dayKey] === entry.id;
                       const taskPreview = getEntryTasks(entry).slice(0, 3);
                       return (
-                        <article key={entry.id} className={`weekly-tab-card ${isActive ? 'is-active' : ''}`}>
+                        <article
+                          key={entry.id}
+                          className={`weekly-tab-card ${isActive ? 'is-active' : ''} ${draggingEntryId === entry.id ? 'is-dragging' : ''}`}
+                          draggable={canEdit}
+                          onDragStart={canEdit ? (e) => {
+                            setDraggingEntryId(entry.id);
+                            e.dataTransfer.effectAllowed = 'move';
+                            e.dataTransfer.setData('text/plain', String(entry.id));
+                            e.dataTransfer.setData('application/x-weekly-day', dayKey);
+                          } : undefined}
+                          onDragEnd={canEdit ? () => setDraggingEntryId(null) : undefined}
+                          onDragOver={canEdit ? (e) => {
+                            e.preventDefault();
+                            if (draggingEntryId && draggingEntryId !== entry.id) {
+                              e.currentTarget.classList.add('is-drop-target');
+                            }
+                          } : undefined}
+                          onDragLeave={canEdit ? (e) => {
+                            e.currentTarget.classList.remove('is-drop-target');
+                          } : undefined}
+                          onDrop={canEdit ? async (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            e.currentTarget.classList.remove('is-drop-target');
+                            const draggedId = e.dataTransfer.getData('text/plain');
+                            const sourceDayKey = e.dataTransfer.getData('application/x-weekly-day');
+                            setDraggingEntryId(null);
+                            if (sourceDayKey && sourceDayKey !== dayKey) {
+                              await moveEntryAcrossDays(sourceDayKey, dayKey, draggedId, entry.id);
+                            } else {
+                              await reorderWithinDay(dayKey, draggedId, entry.id);
+                            }
+                          } : undefined}
+                        >
                           <button
                             type="button"
                             className={`weekly-tab-button ${isActive ? 'is-active' : ''}`}
@@ -593,7 +1075,6 @@ const WeeklyScheduleBoard = ({
                             <div className="weekly-card">
                               <div className="weekly-card-head">
                                 <div className="min-w-0">
-                                  <div className="weekly-card-title">{translateIngredient(entry.recipe_name)}</div>
                                   <div className="weekly-card-meta">
                                     {[entry.target_weight ? `${Number(entry.target_weight).toFixed(0)}g target` : '', entry.target_portions ? `${Number(entry.target_portions).toFixed(0)} portions` : '']
                                       .filter(Boolean)

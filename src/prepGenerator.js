@@ -117,6 +117,61 @@ const getRecipeCategorySignals = (recipe = {}) => {
   };
 };
 
+const getTimeProfile = ({ pattern = '', categorySignals = {}, hasProtein = false }) => {
+  if (pattern === 'coating_system') return 'piecework';
+  if (categorySignals.isMayoLike || categorySignals.isSauceLike || categorySignals.isMarinadeLike) return 'light_scale';
+  if (pattern === 'roux' || pattern === 'stock') return 'medium_scale';
+  if (categorySignals.isMainDish || categorySignals.isMainCarbDish || categorySignals.isVegDish) {
+    return hasProtein ? 'heavy_scale' : 'medium_scale';
+  }
+  return 'medium_scale';
+};
+
+const estimatePrepMinutes = ({
+  recipe = {},
+  scaleFactor = 1,
+  pattern = '',
+  categorySignals = {},
+  hasProtein = false,
+  stepCount = 0
+}) => {
+  const normalizedScale = Math.max(0.1, parseFloat(scaleFactor) || 1);
+  const timeProfile = getTimeProfile({ pattern, categorySignals, hasProtein });
+  const recipeMinutes = Number(recipe.prep_minutes || recipe.prepMinutes || recipe.scalingTips?.prepMinutes || recipe.scaling_tips?.prepMinutes || 0);
+  const setupByProfile = {
+    light_scale: 6,
+    medium_scale: 10,
+    heavy_scale: 14,
+    piecework: 12
+  };
+  const workByProfile = {
+    light_scale: 10,
+    medium_scale: 18,
+    heavy_scale: 24,
+    piecework: 22
+  };
+  const exponentByProfile = {
+    light_scale: 0.55,
+    medium_scale: 0.72,
+    heavy_scale: 0.82,
+    piecework: 0.95
+  };
+
+  const setupMinutes = setupByProfile[timeProfile] || 8;
+  const baseMinutes = recipeMinutes > 0 ? recipeMinutes : setupMinutes + (workByProfile[timeProfile] || 16);
+  const variableMinutes = Math.max(4, baseMinutes - setupMinutes);
+  const scaledMinutes = setupMinutes + (variableMinutes * Math.pow(normalizedScale, exponentByProfile[timeProfile] || 0.7));
+  const adjustedMinutes = Math.max(
+    setupMinutes + Math.max(2, stepCount * 2),
+    Math.round(scaledMinutes)
+  );
+
+  return {
+    minutes: adjustedMinutes,
+    timeProfile
+  };
+};
+
 const classifyBoardBuckets = ({ recipe = {}, steps = [], pattern = '', categorySignals = {} }) => {
   const foundation = [];
   const morning = [];
@@ -495,6 +550,14 @@ export const buildChefPrepDraft = (recipe = {}, scaleFactor = 1, targetWeight = 
   }
 
   const normalizedSteps = steps.filter(Boolean).map((step) => step.replace(/\s+/g, ' ').trim()).filter((step, index, collection) => collection.indexOf(step) === index).slice(0, 4);
+  const prepTimeEstimate = estimatePrepMinutes({
+    recipe,
+    scaleFactor,
+    pattern,
+    categorySignals,
+    hasProtein: proteinItems.length > 0,
+    stepCount: normalizedSteps.length
+  });
   const regular = pattern === 'roux'
     ? 'Whisk steadily for a smooth roux.'
     : pattern === 'coating_system'
@@ -524,6 +587,8 @@ export const buildChefPrepDraft = (recipe = {}, scaleFactor = 1, targetWeight = 
     steps: normalizedSteps,
     regular,
     largeScale,
+    estimatedMinutes: prepTimeEstimate.minutes,
+    timeProfile: prepTimeEstimate.timeProfile,
     boardBuckets: classifyBoardBuckets({
       recipe,
       steps: normalizedSteps,
