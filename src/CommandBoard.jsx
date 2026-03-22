@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from './supabaseClient';
 import { useSettings } from './SettingsContext';
+import WeeklyScheduleBoard from './WeeklyScheduleBoard';
+import { buildChefPrepDraft, estimateRecipeWeight } from './prepGenerator';
 import {
     ChefHat,
     Clock,
@@ -27,9 +29,10 @@ import {
  * CommandBoard Component - Overhauled for Chef Execution
  * Focus: High Readability, Smart Tooling, Grouped Prep Tasks.
  */
-const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, portionTargets = {}, recipes: masterRecipes = [], canEdit = false }) => {
+const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, portionTargets = {}, recipes: masterRecipes = [], canEdit = false, onRecipeMethodSync = null }) => {
     const [boardRecords, setBoardRecords] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [activeView, setActiveView] = useState('board');
     const [exportMenuOpen, setExportMenuOpen] = useState(false);
     const [exportScopes, setExportScopes] = useState(['weekly', 'daily', 'service']);
     const [exportFormat, setExportFormat] = useState('pdf');
@@ -60,6 +63,11 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
         const targetPortions = getTargetPortions(recipe);
         return targetPortions >= 50 ? 'high_volume' : 'regular';
     }, [getTargetPortions]);
+
+    const getScaleFactor = useCallback((recipe) => {
+        const raw = parseFloat(productionTargets[recipe.id] || productionTargets[recipe.meta?.id]);
+        return !Number.isNaN(raw) && raw > 0 ? raw : 1;
+    }, [productionTargets]);
 
     const getBoardData = useCallback((recipe) => {
         const raw = recipe?.data || {};
@@ -347,6 +355,10 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                 targetArray.splice(index, 1);
             }
 
+            if (action === 'append') {
+                targetArray.push(value);
+            }
+
             return { ...record, data: envelope };
         }));
 
@@ -364,6 +376,10 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
 
         if (action === 'delete' && targetArray[index] !== undefined) {
             targetArray.splice(index, 1);
+        }
+
+        if (action === 'append') {
+            targetArray.push(value);
         }
 
         await supabase
@@ -430,9 +446,6 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
             ];
         }
         // Fallback: If it's a foundational prep, use the recipe method
-        if ((meta?.dishStyle === 'prep' || meta?.dishCategory === 'base') && meta?.method) {
-            return mapTaskItems(meta.method, 'weekly');
-        }
         return [];
     };
 
@@ -440,8 +453,6 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
         if (Array.isArray(data?.morning) && data.morning.length > 0) return mapTaskItems(data.morning, 'morning');
         if (data?.morning?.tasks?.length > 0) return mapTaskItems(data.morning.tasks, 'morning_tasks');
         // Fallback: Use recipe method if weekly didn't claim it
-        const isPrep = meta?.dishStyle === 'prep' || meta?.dishCategory === 'base';
-        if (!isPrep && meta?.method) return mapTaskItems(meta.method, 'morning');
         return [];
     };
 
@@ -781,6 +792,82 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
     const allExportScopesSelected = exportScopes.length === exportColumns.length;
     const isColumnVisible = useCallback((columnKey) => !expandedColumn || expandedColumn === columnKey, [expandedColumn]);
 
+    const generateRecipePrep = useCallback(async (recipe) => {
+        const scaleFactor = getScaleFactor(recipe);
+        const targetWeight = estimateRecipeWeight(recipe.meta || {}, scaleFactor);
+        const draft = buildChefPrepDraft(recipe.meta || {}, scaleFactor, targetWeight);
+
+        const nextTasksJson = {
+            ...(recipe.data && typeof recipe.data === 'object' ? recipe.data : {}),
+            weekly: {
+                ...(recipe.data?.weekly && !Array.isArray(recipe.data.weekly) ? recipe.data.weekly : {}),
+                batch: draft.steps,
+                buffer: Array.isArray(recipe.data?.weekly?.buffer) ? recipe.data.weekly.buffer : []
+            },
+            generated_prep: {
+                steps: draft.steps,
+                regular: draft.regular,
+                largeScale: draft.largeScale
+            }
+        };
+
+        const nextScalingTips = {
+            ...(recipe.meta?.scalingTips || recipe.meta?.scaling_tips || {}),
+            regular: draft.regular,
+            largeScale: draft.largeScale,
+            generatedPrep: draft
+        };
+
+        const { error: recipeError } = await supabase
+            .from('sop_recipes')
+            .update({
+                method: draft.steps,
+                scaling_tips: nextScalingTips
+            })
+            .eq('client_id', clientId)
+            .eq('recipe_id', recipe.meta?.id || recipe.id);
+
+        if (recipeError) {
+            window.alert(`Prep generation failed: ${recipeError.message}`);
+            return;
+        }
+
+        const { error: boardError } = await supabase
+            .from('sop_board_tasks')
+            .upsert({
+                dish_name: recipe.dish_name,
+                tasks_json: nextTasksJson,
+                client_id: clientId
+            }, { onConflict: 'dish_name,client_id' });
+
+        if (boardError) {
+            window.alert(`Board sync failed: ${boardError.message}`);
+            return;
+        }
+
+        setBoardRecords((prev) => prev.map((record) => (
+            record.id === recipe.id || record.dish_name === recipe.dish_name
+                ? {
+                    ...record,
+                    data: nextTasksJson,
+                    hasTasks: true,
+                    meta: {
+                        ...record.meta,
+                        method: draft.steps,
+                        scalingTips: nextScalingTips
+                    }
+                }
+                : record
+        )));
+
+        if (typeof onRecipeMethodSync === 'function') {
+            onRecipeMethodSync(recipe.meta?.id || recipe.id, {
+                method: draft.steps,
+                scalingTips: nextScalingTips
+            });
+        }
+    }, [clientId, getScaleFactor, onRecipeMethodSync]);
+
     const renderGroupedTasks = (recipe, boxKey, tasks, isForward = false) => {
         if (!tasks || tasks.length === 0) return null;
 
@@ -903,118 +990,159 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
 
             <div className="board-header">
                 <div className="flex items-center gap-6">
+                    <div className="flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950/80 p-1">
+                        <button
+                            className={`rounded-lg px-3 py-2 text-[10px] font-black uppercase tracking-widest transition-all ${activeView === 'board' ? 'bg-app-accent text-app-bg' : 'text-zinc-400 hover:text-zinc-100'}`}
+                            onClick={() => {
+                                setActiveView('board');
+                                setExportMenuOpen(false);
+                            }}
+                        >
+                            Kitchen Board
+                        </button>
+                        <button
+                            className={`rounded-lg px-3 py-2 text-[10px] font-black uppercase tracking-widest transition-all ${activeView === 'weekly' ? 'bg-app-accent text-app-bg' : 'text-zinc-400 hover:text-zinc-100'}`}
+                            onClick={() => {
+                                setActiveView('weekly');
+                                setExportMenuOpen(false);
+                            }}
+                        >
+                            Weekly Schedule
+                        </button>
+                    </div>
                     <div className="text-[10px] font-black uppercase tracking-widest text-app-muted">
-                        Kitchen Task Board
+                        {activeView === 'weekly' ? 'Weekly Prep Planner + History' : 'Kitchen Task Board'}
                     </div>
                 </div>
 
                 <div className="flex items-center gap-6">
-                    <div className="progress-hud">
-                        <div className="flex flex-col items-end">
-                            <div className="text-[10px] font-black mb-1 opacity-50 tracking-widest">KITCHEN READINESS: {stats.percent}%</div>
-                            <div className="bar-container bg-zinc-800"><div className="bar-fill" style={{ width: `${stats.percent}%` }}></div></div>
-                        </div>
-                    </div>
-                    <div className="h-8 w-px bg-zinc-800"></div>
-                    <div className="flex items-center gap-2">
-                        <div className="relative">
-                            <button
-                                className="px-4 py-2 hover:bg-zinc-800 border border-zinc-700 text-[10px] font-black uppercase rounded-xl transition-all"
-                                onClick={() => setExportMenuOpen((prev) => !prev)}
-                            >
-                                {exportFormat === 'csv' ? <Download size={14} className="inline mr-2 opacity-50" /> : <Printer size={14} className="inline mr-2 opacity-50" />}
-                                Export
-                            </button>
-                            {exportMenuOpen && (
-                                <div className="absolute right-0 top-full z-30 mt-2 w-72 rounded-2xl border border-zinc-800 bg-zinc-950 p-4 shadow-2xl">
-                                    <div className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-500">Download Plan</div>
-                                    <div className="mt-4">
-                                        <div className="text-[9px] font-black uppercase tracking-[0.16em] text-zinc-500">Format</div>
-                                        <div className="mt-2 grid grid-cols-2 gap-2">
-                                            {['pdf', 'csv'].map((format) => (
+                    {activeView === 'board' ? (
+                        <>
+                            <div className="progress-hud">
+                                <div className="flex flex-col items-end">
+                                    <div className="text-[10px] font-black mb-1 opacity-50 tracking-widest">KITCHEN READINESS: {stats.percent}%</div>
+                                    <div className="bar-container bg-zinc-800"><div className="bar-fill" style={{ width: `${stats.percent}%` }}></div></div>
+                                </div>
+                            </div>
+                            <div className="h-8 w-px bg-zinc-800"></div>
+                            <div className="flex items-center gap-2">
+                                <div className="relative">
+                                    <button
+                                        className="px-4 py-2 hover:bg-zinc-800 border border-zinc-700 text-[10px] font-black uppercase rounded-xl transition-all"
+                                        onClick={() => setExportMenuOpen((prev) => !prev)}
+                                    >
+                                        {exportFormat === 'csv' ? <Download size={14} className="inline mr-2 opacity-50" /> : <Printer size={14} className="inline mr-2 opacity-50" />}
+                                        Export
+                                    </button>
+                                    {exportMenuOpen && (
+                                        <div className="absolute right-0 top-full z-30 mt-2 w-72 rounded-2xl border border-zinc-800 bg-zinc-950 p-4 shadow-2xl">
+                                            <div className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-500">Download Plan</div>
+                                            <div className="mt-4">
+                                                <div className="text-[9px] font-black uppercase tracking-[0.16em] text-zinc-500">Format</div>
+                                                <div className="mt-2 grid grid-cols-2 gap-2">
+                                                    {['pdf', 'csv'].map((format) => (
+                                                        <button
+                                                            key={format}
+                                                            className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase transition-all ${
+                                                                exportFormat === format
+                                                                    ? 'border-app-accent bg-app-accent/15 text-app-accent'
+                                                                    : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800'
+                                                            }`}
+                                                            onClick={() => setExportFormat(format)}
+                                                        >
+                                                            {format}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                            {exportFormat === 'pdf' && (
+                                                <div className="mt-4">
+                                                    <div className="text-[9px] font-black uppercase tracking-[0.16em] text-zinc-500">Layout</div>
+                                                    <div className="mt-2 grid grid-cols-2 gap-2">
+                                                        {['horizontal', 'vertical'].map((layout) => (
+                                                            <button
+                                                                key={layout}
+                                                                className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase transition-all ${
+                                                                    exportLayout === layout
+                                                                        ? 'border-app-accent bg-app-accent/15 text-app-accent'
+                                                                        : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800'
+                                                                }`}
+                                                                onClick={() => setExportLayout(layout)}
+                                                            >
+                                                                {layout}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
+                                            <div className="mt-4">
+                                                <div className="text-[9px] font-black uppercase tracking-[0.16em] text-zinc-500">Tables</div>
+                                                <div className="mt-2 space-y-2">
+                                                    <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-[10px] font-black uppercase text-zinc-200">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={allExportScopesSelected}
+                                                            onChange={() => setExportScopes(allExportScopesSelected ? [] : exportColumns.map(({ key }) => key))}
+                                                            className="h-4 w-4 accent-[var(--app-accent)]"
+                                                        />
+                                                        All Tables
+                                                    </label>
+                                                    {exportColumns.map(({ key, label }) => (
+                                                        <label key={key} className="flex cursor-pointer items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-[10px] font-black uppercase text-zinc-200">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={exportScopes.includes(key)}
+                                                                onChange={() => toggleExportScope(key)}
+                                                                className="h-4 w-4 accent-[var(--app-accent)]"
+                                                            />
+                                                            {label}
+                                                        </label>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                            <div className="mt-4 flex gap-2">
                                                 <button
-                                                    key={format}
-                                                    className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase transition-all ${
-                                                        exportFormat === format
-                                                            ? 'border-app-accent bg-app-accent/15 text-app-accent'
-                                                            : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800'
-                                                    }`}
-                                                    onClick={() => setExportFormat(format)}
+                                                    className="flex-1 rounded-xl border border-zinc-800 px-3 py-2 text-[10px] font-black uppercase text-zinc-300 transition-all hover:bg-zinc-900"
+                                                    onClick={() => setExportMenuOpen(false)}
                                                 >
-                                                    {format}
+                                                    Close
                                                 </button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                    {exportFormat === 'pdf' && (
-                                        <div className="mt-4">
-                                            <div className="text-[9px] font-black uppercase tracking-[0.16em] text-zinc-500">Layout</div>
-                                            <div className="mt-2 grid grid-cols-2 gap-2">
-                                                {['horizontal', 'vertical'].map((layout) => (
-                                                    <button
-                                                        key={layout}
-                                                        className={`rounded-xl border px-3 py-2 text-[10px] font-black uppercase transition-all ${
-                                                            exportLayout === layout
-                                                                ? 'border-app-accent bg-app-accent/15 text-app-accent'
-                                                                : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800'
-                                                        }`}
-                                                        onClick={() => setExportLayout(layout)}
-                                                    >
-                                                        {layout}
-                                                    </button>
-                                                ))}
+                                                <button
+                                                    className="flex-1 rounded-xl border border-app-accent bg-app-accent/15 px-3 py-2 text-[10px] font-black uppercase text-app-accent transition-all hover:bg-app-accent/20 disabled:cursor-not-allowed disabled:opacity-40"
+                                                    onClick={handleExport}
+                                                    disabled={exportScopes.length === 0}
+                                                >
+                                                    Download
+                                                </button>
                                             </div>
                                         </div>
                                     )}
-                                    <div className="mt-4">
-                                        <div className="text-[9px] font-black uppercase tracking-[0.16em] text-zinc-500">Tables</div>
-                                        <div className="mt-2 space-y-2">
-                                            <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-[10px] font-black uppercase text-zinc-200">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={allExportScopesSelected}
-                                                    onChange={() => setExportScopes(allExportScopesSelected ? [] : exportColumns.map(({ key }) => key))}
-                                                    className="h-4 w-4 accent-[var(--app-accent)]"
-                                                />
-                                                All Tables
-                                            </label>
-                                            {exportColumns.map(({ key, label }) => (
-                                                <label key={key} className="flex cursor-pointer items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-[10px] font-black uppercase text-zinc-200">
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={exportScopes.includes(key)}
-                                                        onChange={() => toggleExportScope(key)}
-                                                        className="h-4 w-4 accent-[var(--app-accent)]"
-                                                    />
-                                                    {label}
-                                                </label>
-                                            ))}
-                                        </div>
-                                    </div>
-                                    <div className="mt-4 flex gap-2">
-                                        <button
-                                            className="flex-1 rounded-xl border border-zinc-800 px-3 py-2 text-[10px] font-black uppercase text-zinc-300 transition-all hover:bg-zinc-900"
-                                            onClick={() => setExportMenuOpen(false)}
-                                        >
-                                            Close
-                                        </button>
-                                        <button
-                                            className="flex-1 rounded-xl border border-app-accent bg-app-accent/15 px-3 py-2 text-[10px] font-black uppercase text-app-accent transition-all hover:bg-app-accent/20 disabled:cursor-not-allowed disabled:opacity-40"
-                                            onClick={handleExport}
-                                            disabled={exportScopes.length === 0}
-                                        >
-                                            Download
-                                        </button>
-                                    </div>
                                 </div>
-                            )}
+                                <button className="px-5 py-2 hover:bg-zinc-800 border border-zinc-700 text-[10px] font-black uppercase rounded-xl transition-all" onClick={resetBoard}><RotateCcw size={14} className="inline mr-2 opacity-50" /> RESET BOARD</button>
+                            </div>
+                        </>
+                    ) : (
+                        <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                            Reuse live board recipes, assign days, edit tasks globally
                         </div>
-                        <button className="px-5 py-2 hover:bg-zinc-800 border border-zinc-700 text-[10px] font-black uppercase rounded-xl transition-all" onClick={resetBoard}><RotateCcw size={14} className="inline mr-2 opacity-50" /> RESET BOARD</button>
-                    </div>
+                    )}
                 </div>
             </div>
 
-            {filteredRecords.length === 0 ? (
+            {activeView === 'weekly' ? (
+                <WeeklyScheduleBoard
+                    clientId={clientId}
+                    boardRecords={boardRecords}
+                    filteredRecords={filteredRecords}
+                    productionTargets={productionTargets}
+                    portionTargets={portionTargets}
+                    canEdit={canEdit}
+                    translateIngredient={translateIngredient}
+                    getBoardData={getBoardData}
+                    getWeeklyTasks={getWeeklyTasks}
+                    mutateTaskAt={mutateTaskAt}
+                />
+            ) : filteredRecords.length === 0 ? (
                 <div className="flex-1 flex flex-col items-center justify-center text-app-muted bg-app-surface border border-dashed border-app-border rounded-xl m-10">
                     <ClipboardCheck size={48} className="opacity-20 mb-4" />
                     <p className="font-black uppercase tracking-widest text-[10px]">No active recipes for this board</p>
@@ -1040,7 +1168,29 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                                     {filteredRecords.map(r => {
                                         const resolved = getBoardData(r);
                                         const tasks = getWeeklyTasks(resolved, r.meta);
-                                        if (tasks.length === 0) return null;
+                                        if (tasks.length === 0) {
+                                            if (!canEdit) return null;
+                                            return (
+                                                <div data-testid={`board-card-weekly-${r.id}`} key={r.id} className="recipe-box hover:border-blue-500/30 transition-all">
+                                                    <div className="recipe-header">
+                                                        <div className="flex min-w-0 items-center gap-2">
+                                                            <span className="recipe-name text-blue-400">{translateIngredient(r.dish_name)}</span>
+                                                        </div>
+                                                    </div>
+                                                    <div className="rounded-lg border border-dashed border-zinc-700 bg-zinc-950/40 p-3 text-[10px] text-zinc-400">
+                                                        No prep summary saved yet.
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => generateRecipePrep(r)}
+                                                            className="mt-3 inline-flex items-center gap-2 rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-blue-300 hover:bg-blue-500 hover:text-white transition-colors"
+                                                        >
+                                                            <Zap size={12} />
+                                                            Generate Prep
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            );
+                                        }
                                         const boxKey = `${r.id}-weekly-box`;
                                         const isEditingBox = editingBoxKey === boxKey;
                                         return (
