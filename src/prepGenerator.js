@@ -97,6 +97,123 @@ const capSentence = (value = '') => {
   return `${cleaned.charAt(0).toUpperCase()}${cleaned.slice(1)}.`;
 };
 
+const getRecipeCategorySignals = (recipe = {}) => {
+  const name = toComparableText(recipe.name);
+  const dishStyle = toComparableText(recipe.dishStyle || recipe.style || recipe.dish_style);
+  const dishCategory = toComparableText(recipe.dishCategory || recipe.category || recipe.tier || recipe.cuisine_type);
+  const portionClass = toComparableText(recipe.portion_class || recipe.portionClass);
+  const selectorGroup = toComparableText(recipe?.scalingTips?.selectorGroup || recipe?.scaling_tips?.selectorGroup);
+  const combined = [name, dishStyle, dishCategory, portionClass, selectorGroup].filter(Boolean).join(' | ');
+
+  return {
+    combined,
+    isSauceLike: /(sauce|glaze|dressing|dip|mayo|aioli)/.test(combined),
+    isMayoLike: /(mayo|mayonnaise|aioli)/.test(combined),
+    isMarinadeLike: /(marinade|pre-prep)/.test(combined),
+    isMainDish: /(main meat dish|main \+ carb dish|main dish|meat stir fry|curry|stew)/.test(combined),
+    isVegDish: /(veg stir fry|salad|slaw|veg dish|vegetable)/.test(combined),
+    isMainCarbDish: /(main \+ carb dish|main_carb|main carb)/.test(combined),
+    isPrepComponent: /(foundation prep|component|base|foundation|carb base dish|kimchi|prep)/.test(combined)
+  };
+};
+
+const classifyBoardBuckets = ({ recipe = {}, steps = [], pattern = '', categorySignals = {} }) => {
+  const foundation = [];
+  const morning = [];
+  const afternoon = [];
+  const servicePrep = [];
+
+  const pushUnique = (bucket, step) => {
+    const clean = String(step || '').trim();
+    if (!clean) return;
+    if (!bucket.includes(clean)) bucket.push(clean);
+  };
+
+  steps.forEach((step, index) => {
+    const lower = toComparableText(step);
+    const isStorage = /(label|store|chill|cool|pack)/.test(lower);
+    const isService = /(before service|service|coat|coating|garnish|transfer|hold ready|hold for service|finish the batch and hold|finish with)/.test(lower);
+    const isSlurry = /slurry/.test(lower);
+    const isFinish = /(finish|adjust|check seasoning|whisk into|fold .*mayo|fold .*mayonnaise)/.test(lower);
+
+    if (pattern === 'coating_system') {
+      if (index <= 1) pushUnique(morning, step);
+      else if (isService || /crumb|press the coating/.test(lower)) pushUnique(afternoon, step);
+      else pushUnique(morning, step);
+      return;
+    }
+
+    if (categorySignals.isSauceLike || categorySignals.isMarinadeLike || categorySignals.isPrepComponent || ['roux', 'stock', 'dry_mix'].includes(pattern)) {
+      if (pattern === 'blended_sauce' && !categorySignals.isMayoLike && (index === 0 || /build the sauce base|build the base|heat .* then cook/.test(lower))) {
+        pushUnique(foundation, step);
+        return;
+      }
+      if (['roux', 'stock', 'dry_mix'].includes(pattern) && (index < Math.max(1, steps.length - 1) || isStorage)) {
+        if (!isStorage) pushUnique(foundation, step);
+        else if (foundation.length > 0) foundation[foundation.length - 1] = foundation[foundation.length - 1];
+        return;
+      }
+      if (isStorage) {
+        if (foundation.length > 0) {
+          foundation[foundation.length - 1] = foundation[foundation.length - 1];
+        }
+        return;
+      }
+      if (isService || /before coating|before service/.test(lower)) {
+        pushUnique(servicePrep, step);
+        return;
+      }
+      if (isSlurry || isFinish) {
+        pushUnique(morning, step);
+        return;
+      }
+      if (pattern === 'marinade' || categorySignals.isMayoLike) {
+        pushUnique(morning, step);
+        return;
+      }
+      pushUnique(foundation, step);
+      return;
+    }
+
+    if (categorySignals.isMainDish || categorySignals.isMainCarbDish || categorySignals.isVegDish) {
+      if (isService) {
+        pushUnique(servicePrep, step);
+        return;
+      }
+      if (isSlurry || isFinish || index >= 2) {
+        pushUnique(afternoon, step);
+        return;
+      }
+      pushUnique(morning, step);
+      return;
+    }
+
+    if (isService) {
+      pushUnique(servicePrep, step);
+    } else if (isSlurry || isFinish) {
+      pushUnique(afternoon, step);
+    } else {
+      pushUnique(morning, step);
+    }
+  });
+
+  return {
+    weekly: {
+      batch: foundation,
+      buffer: []
+    },
+    morning: {
+      tasks: morning,
+      forward: afternoon
+    },
+    service: {
+      prep: servicePrep,
+      setup: [],
+      garnish: []
+    }
+  };
+};
+
 const classifyIngredientType = (ingredient = {}) => {
   const name = toComparableText(ingredient.name);
   const category = toComparableText(ingredient.category || ingredient.cat);
@@ -144,6 +261,7 @@ const detectRecipePattern = (recipe = {}) => {
   const methodText = (recipe.method || []).join(' ').toLowerCase();
   const ingredientTypes = (recipe.ingredients || []).map(classifyIngredientType);
   const ingredientNames = (recipe.ingredients || []).map((ingredient) => toComparableText(ingredient?.name));
+  const categorySignals = getRecipeCategorySignals(recipe);
   const hasMayoStyleBase = name.includes('mayo') || ingredientNames.some((ingredientName) => EMULSION_KEYWORDS.some((keyword) => ingredientName.includes(keyword)));
   const hasFlourLikeBase = ingredientNames.some((ingredientName) => ingredientName.includes('flour') || ingredientName.includes('roux'));
   const hasProtein = ingredientNames.some((ingredientName) => PROTEIN_KEYWORDS.some((keyword) => ingredientName.includes(keyword)));
@@ -151,7 +269,9 @@ const detectRecipePattern = (recipe = {}) => {
   const hasEggWash = ingredientNames.some((ingredientName) => EGG_WASH_KEYWORDS.some((keyword) => ingredientName.includes(keyword)));
   const hasCoatingFlour = ingredientNames.some((ingredientName) => ingredientName.includes('flour') || ingredientName.includes('starch'));
 
-  if (hasMayoStyleBase) return 'blended_sauce';
+  if (hasMayoStyleBase || categorySignals.isMayoLike) return 'blended_sauce';
+  if (categorySignals.isMarinadeLike) return 'marinade';
+  if (categorySignals.isSauceLike && !categorySignals.isMainDish) return 'blended_sauce';
   if (name.includes('coating') || name.includes('katsu') || name.includes('bread') || (hasProtein && hasCrumbs && hasCoatingFlour && hasEggWash)) return 'coating_system';
   if (name.includes('roux') || (hasFlourLikeBase && ingredientTypes.includes('fat') && WHISK_KEYWORDS.some((keyword) => methodText.includes(keyword)))) return 'roux';
   if (BLEND_KEYWORDS.some((keyword) => methodText.includes(keyword)) || name.includes('sauce') || name.includes('dressing')) return 'blended_sauce';
@@ -176,6 +296,7 @@ export const buildChefPrepDraft = (recipe = {}, scaleFactor = 1, targetWeight = 
   const methodText = (recipe.method || []).join(' ').toLowerCase();
   const phases = summarizeIngredientPhases(ingredients);
   const normalizedName = toComparableText(recipe.name);
+  const categorySignals = getRecipeCategorySignals(recipe);
   const emulsionPasteItems = dedupeIngredientList(phases.pastes.filter((ingredient) => EMULSION_KEYWORDS.some((keyword) => toComparableText(ingredient?.name).includes(keyword))));
   const workingPasteItems = dedupeIngredientList(phases.pastes.filter((ingredient) => !EMULSION_KEYWORDS.some((keyword) => toComparableText(ingredient?.name).includes(keyword))));
   const hasLiquids = phases.liquids.length > 0;
@@ -203,7 +324,7 @@ export const buildChefPrepDraft = (recipe = {}, scaleFactor = 1, targetWeight = 
   const hasRoastCue = ROAST_KEYWORDS.some((keyword) => methodText.includes(keyword));
   const hasStrainCue = STRAIN_KEYWORDS.some((keyword) => methodText.includes(keyword));
   const hasFryCue = FRY_KEYWORDS.some((keyword) => methodText.includes(keyword));
-  const needsChill = STORAGE_KEYWORDS.some((keyword) => methodText.includes(keyword)) || ['sauce', 'dressing', 'marinade', 'slaw'].some((keyword) => normalizedName.includes(keyword));
+  const needsChill = STORAGE_KEYWORDS.some((keyword) => methodText.includes(keyword)) || categorySignals.isSauceLike || categorySignals.isMarinadeLike || ['sauce', 'dressing', 'marinade', 'slaw'].some((keyword) => normalizedName.includes(keyword));
   const liquidCount = countNamedIngredients(nonFinishLiquids);
   const aromaticCount = countNamedIngredients(phases.aromatics);
   const pasteCount = countNamedIngredients(workingPasteItems);
@@ -234,6 +355,9 @@ export const buildChefPrepDraft = (recipe = {}, scaleFactor = 1, targetWeight = 
   const pushCloseout = () => {
     if (pattern === 'dry_mix') return pushStep(scaleProfile === 'bulk' ? 'Pack the mix into labeled dry containers' : 'Portion, label, and store dry');
     if (pattern === 'stock') return pushStep(hasStrainCue ? 'Strain, cool, label, and chill the batch' : 'Cool, label, and chill the batch');
+    if (categorySignals.isMainDish || categorySignals.isMainCarbDish || categorySignals.isVegDish) {
+      return pushStep(scaleProfile === 'bulk' ? 'Transfer to gastronorms, label, and hold for service' : 'Portion for service and hold ready');
+    }
     if (scaleProfile === 'bulk') return pushStep(needsChill ? 'Transfer to labeled containers and chill' : 'Transfer to labeled containers and hold ready for service');
     return pushStep(needsChill ? 'Portion, label, and store chilled' : 'Portion, label, and store');
   };
@@ -329,6 +453,27 @@ export const buildChefPrepDraft = (recipe = {}, scaleFactor = 1, targetWeight = 
     if (hasFat) pushStep(`break up ${fatNames || 'any fat-rich lumps'} and finish the mix`);
     pushCloseout();
   } else {
+    if (categorySignals.isMainDish || categorySignals.isMainCarbDish || categorySignals.isVegDish) {
+      if (hasProtein) {
+        pushStep(hasSpices ? `season ${formatIngredientGroup(proteinItems, 'the protein', 2)} with ${formatIngredientGroup(seasoningItems, 'the seasoning', 3)}` : `prepare ${formatIngredientGroup(proteinItems, 'the protein', 2)}`);
+      }
+      if (hasFat || hasLiquids) {
+        const baseParts = dedupeIngredientList([...phases.fats, ...nonFinishLiquids]);
+        if (baseParts.length > 0) pushStep(`build the cooking base with ${formatIngredientGroup(baseParts, 'the base ingredients', 3)}`);
+      }
+      if (hasAromatics || hasPastes) {
+        pushStep(hasFryCue || hasProtein
+          ? `cook ${[aromaticNames, pasteNames].filter(Boolean).join(' and ') || 'the aromatics'} into the base`
+          : `add ${[aromaticNames, pasteNames].filter(Boolean).join(' and ') || 'the aromatics'} and work through the batch`);
+      }
+      if (dryBulkItems.length > 0 && !hasProtein) {
+        pushStep(`add ${formatIngredientGroup(dryBulkItems, 'the solids', 2)} to the base`);
+      }
+      if (starchItems.length) pushSlurryStep();
+      if (hasSpices && !hasProtein) pushStep(`finish with ${formatIngredientGroup(seasoningItems, 'the seasoning', 3)} and adjust the balance`);
+      if (hasSimmerCue || hasFryCue) pushStep(categorySignals.isMainCarbDish ? 'finish the batch and hold ready with the carb' : 'finish the batch and hold ready for service');
+      pushCloseout();
+    } else {
     const fatOnlyStart = hasFat && nonFinishLiquids.length === 0;
     if (fatOnlyStart && (hasAromatics || hasPastes)) {
       pushStep(`heat ${formatIngredientGroup(phases.fats, 'the oil', 2)}${hasAromatics ? `, then cook ${formatIngredientGroup(phases.aromatics, 'the aromatics', 3)}` : ''}${hasPastes ? `${hasAromatics ? ' with ' : ', then add '}${formatIngredientGroup(workingPasteItems, 'the paste ingredients', 2)}` : ''}`);
@@ -346,6 +491,7 @@ export const buildChefPrepDraft = (recipe = {}, scaleFactor = 1, targetWeight = 
     if (hasSpices || (dryBulkCount > 0 && steps.length < 3)) pushStep(`add ${formatIngredientGroup([...seasoningItems, ...dryBulkItems.slice(0, 1)].filter((ingredient) => !isStarchLike(ingredient)), 'the seasoning', 3)} and adjust the finish`);
     if (hasSimmerCue && !steps.some((step) => step.toLowerCase().includes('simmer'))) pushStep('finish the batch over gentle heat');
     pushCloseout();
+    }
   }
 
   const normalizedSteps = steps.filter(Boolean).map((step) => step.replace(/\s+/g, ' ').trim()).filter((step, index, collection) => collection.indexOf(step) === index).slice(0, 4);
@@ -374,5 +520,16 @@ export const buildChefPrepDraft = (recipe = {}, scaleFactor = 1, targetWeight = 
               : 'Monitor heat levels.')
     : (hasMayoStyleBase ? 'Keep the mayo cold and avoid overworking the batch.' : pattern === 'coating_system' ? 'Keep each tray dry and avoid compressing the crumb.' : 'Monitor heat levels.');
 
-  return { steps: normalizedSteps, regular, largeScale, meta: { pattern, scaleProfile } };
+  return {
+    steps: normalizedSteps,
+    regular,
+    largeScale,
+    boardBuckets: classifyBoardBuckets({
+      recipe,
+      steps: normalizedSteps,
+      pattern,
+      categorySignals
+    }),
+    meta: { pattern, scaleProfile }
+  };
 };

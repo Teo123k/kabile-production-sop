@@ -512,9 +512,9 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
     };
 
     const exportColumns = useMemo(() => ([
-        { key: 'weekly', label: 'Foundations' },
+        { key: 'weekly', label: 'Foundation Prep' },
         { key: 'daily', label: 'Daily Prep' },
-        { key: 'service', label: 'Pre-Service' }
+        { key: 'service', label: 'Service Prep' }
     ]), []);
 
     const getColumnPayload = useCallback((columnKey) => {
@@ -525,7 +525,7 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                 if (tasks.length > 0) {
                     acc.push({
                         recipe,
-                        sections: [{ title: 'Foundations', tasks }]
+                        sections: [{ title: 'Long-Life Prep', tasks }]
                     });
                 }
                 return acc;
@@ -536,8 +536,8 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                 const forwardTasks = getForwardTasks(resolved);
                 if (tasks.length > 0 || forwardTasks.length > 0) {
                     const sections = [];
-                    if (tasks.length > 0) sections.push({ title: 'Daily Prep', tasks });
-                    if (forwardTasks.length > 0) sections.push({ title: 'Forward Prep', tasks: forwardTasks });
+                    if (tasks.length > 0) sections.push({ title: 'Morning Prep', tasks });
+                    if (forwardTasks.length > 0) sections.push({ title: 'Afternoon Prep', tasks: forwardTasks });
                     acc.push({ recipe, sections });
                 }
                 return acc;
@@ -548,7 +548,7 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                 if (tasks.length > 0) {
                     acc.push({
                         recipe,
-                        sections: [{ title: 'Pre-Service', tasks }]
+                        sections: [{ title: 'Before Service', tasks }]
                     });
                 }
             }
@@ -796,13 +796,33 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
         const scaleFactor = getScaleFactor(recipe);
         const targetWeight = estimateRecipeWeight(recipe.meta || {}, scaleFactor);
         const draft = buildChefPrepDraft(recipe.meta || {}, scaleFactor, targetWeight);
+        const existingWeekly = Array.isArray(recipe.data?.weekly)
+            ? { batch: [...recipe.data.weekly], buffer: [] }
+            : { ...(recipe.data?.weekly || {}) };
+        const existingMorning = Array.isArray(recipe.data?.morning)
+            ? { tasks: [...recipe.data.morning], forward: [] }
+            : { ...(recipe.data?.morning || {}) };
+        const existingService = Array.isArray(recipe.data?.service)
+            ? { prep: [...recipe.data.service], setup: [], garnish: [] }
+            : { ...(recipe.data?.service || {}) };
 
         const nextTasksJson = {
             ...(recipe.data && typeof recipe.data === 'object' ? recipe.data : {}),
             weekly: {
-                ...(recipe.data?.weekly && !Array.isArray(recipe.data.weekly) ? recipe.data.weekly : {}),
-                batch: draft.steps,
-                buffer: Array.isArray(recipe.data?.weekly?.buffer) ? recipe.data.weekly.buffer : []
+                ...existingWeekly,
+                batch: draft.boardBuckets?.weekly?.batch || [],
+                buffer: draft.boardBuckets?.weekly?.buffer || existingWeekly.buffer || []
+            },
+            morning: {
+                ...existingMorning,
+                tasks: draft.boardBuckets?.morning?.tasks || [],
+                forward: draft.boardBuckets?.morning?.forward || []
+            },
+            service: {
+                ...existingService,
+                prep: draft.boardBuckets?.service?.prep || [],
+                setup: draft.boardBuckets?.service?.setup || [],
+                garnish: draft.boardBuckets?.service?.garnish || []
             },
             generated_prep: {
                 steps: draft.steps,
@@ -1155,8 +1175,8 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                             <div className={`board-column ${expandedColumn === 'weekly' ? 'focused-column' : ''}`} style={{ borderTop: '4px solid #3b82f6' }}>
                                 <div className="col-header">
                                     <div className="col-title-stack">
-                                        <div className="col-title-main"><ChefHat size={16} className="text-blue-400" /> Foundations</div>
-                                        <div className="col-title-sub">Batch & Buffer</div>
+                                        <div className="col-title-main"><ChefHat size={16} className="text-blue-400" /> Foundation Prep</div>
+                                        <div className="col-title-sub">Long-life prep only</div>
                                     </div>
                                     <div className="col-header-actions">
                                         <button className="column-focus-button" onClick={() => setExpandedColumn(expandedColumn === 'weekly' ? null : 'weekly')}>
@@ -1237,7 +1257,7 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                                 <div className="col-header">
                                     <div className="col-title-stack">
                                         <div className="col-title-main"><Timer size={16} className="text-amber-500" /> Daily Prep</div>
-                                        <div className="col-title-sub">Morning Mise</div>
+                                        <div className="col-title-sub">Today&apos;s production</div>
                                     </div>
                                     <div className="col-header-actions">
                                         <button className="column-focus-button" onClick={() => setExpandedColumn(expandedColumn === 'daily' ? null : 'daily')}>
@@ -1278,7 +1298,7 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                                                 {renderGroupedTasks(r, boxKey, tasks)}
                                                 {forwardTasks.length > 0 && (
                                                     <>
-                                                        <div className="section-note">Forward Prep</div>
+                                                        <div className="section-note">Afternoon Prep</div>
                                                         {renderGroupedTasks(r, boxKey, forwardTasks, true)}
                                                     </>
                                                 )}
@@ -1292,8 +1312,8 @@ const CommandBoard = ({ clientId = 'kabile', onExit, productionTargets = {}, por
                             <div className={`board-column ${expandedColumn === 'service' ? 'focused-column' : ''}`} style={{ borderTop: '4px solid #10b981' }}>
                                 <div className="col-header">
                                     <div className="col-title-stack">
-                                        <div className="col-title-main"><Zap size={16} className="text-emerald-500" /> Pre-Service</div>
-                                        <div className="col-title-sub">Setup & Garnish</div>
+                                        <div className="col-title-main"><Zap size={16} className="text-emerald-500" /> Service Prep</div>
+                                        <div className="col-title-sub">Just before service</div>
                                     </div>
                                     <div className="col-header-actions">
                                         <button className="column-focus-button" onClick={() => setExpandedColumn(expandedColumn === 'service' ? null : 'service')}>

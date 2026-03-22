@@ -44,6 +44,7 @@ import { Routes, Route, useParams, Navigate } from 'react-router-dom';
 import { useSettings } from './SettingsContext';
 
 import { calculateBOM } from './utils/BOMEngine';
+import { buildChefPrepDraft as sharedBuildChefPrepDraft } from './prepGenerator';
 import {
   chefRound as coreChefRound,
   formatQuantity as coreFormatQuantity,
@@ -1718,7 +1719,7 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
   const generatePrepBoardDraft = useCallback(() => {
     if (!activeRecipe) return;
     if (!isEditMode) setIsEditMode(true);
-    const draft = buildChefPrepDraft(activeRecipe, rootScaleFactor, currentYieldValue);
+    const draft = sharedBuildChefPrepDraft(activeRecipe, rootScaleFactor, currentYieldValue);
     updateActiveRecipeLocal({
       method: draft.steps,
       ...(isBulkMode ? { bulkMethod: draft.steps } : {}),
@@ -1790,7 +1791,7 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
 
   const saveGeneratedPrepToBoard = useCallback(async () => {
     const visibleMethod = isBulkMode && Array.isArray(activeRecipe?.bulkMethod) ? activeRecipe.bulkMethod : activeRecipe?.method;
-    const draft = activeRecipe?.scalingTips?.generatedPrep;
+    const draft = activeRecipe?.scalingTips?.generatedPrep || sharedBuildChefPrepDraft(activeRecipe, rootScaleFactor, currentYieldValue);
     if (!activeRecipe || !(visibleMethod || []).length) {
       window.alert('Generate prep instructions first.');
       return;
@@ -1821,12 +1822,30 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
     const existingWeekly = Array.isArray(existingTasks.weekly)
       ? { batch: [...existingTasks.weekly], buffer: [] }
       : { ...(existingTasks.weekly || {}) };
+    const existingMorning = Array.isArray(existingTasks.morning)
+      ? { tasks: [...existingTasks.morning], forward: [] }
+      : { ...(existingTasks.morning || {}) };
+    const existingService = Array.isArray(existingTasks.service)
+      ? { prep: [...existingTasks.service], setup: [], garnish: [] }
+      : { ...(existingTasks.service || {}) };
+    const boardBuckets = draft?.boardBuckets || {};
 
     const nextTasksJson = {
       ...existingTasks,
       weekly: {
-        batch: cleanedSteps,
-        buffer: existingWeekly.buffer || []
+        batch: boardBuckets?.weekly?.batch || cleanedSteps,
+        buffer: boardBuckets?.weekly?.buffer || existingWeekly.buffer || []
+      },
+      morning: {
+        ...existingMorning,
+        tasks: boardBuckets?.morning?.tasks || existingMorning.tasks || [],
+        forward: boardBuckets?.morning?.forward || existingMorning.forward || []
+      },
+      service: {
+        ...existingService,
+        prep: boardBuckets?.service?.prep || existingService.prep || [],
+        setup: boardBuckets?.service?.setup || existingService.setup || [],
+        garnish: boardBuckets?.service?.garnish || existingService.garnish || []
       },
       generated_prep: {
         regular: activeRecipe.scalingTips?.regular || draft?.regular || '',
@@ -1852,7 +1871,7 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
     }
 
     window.alert('Prep instructions saved to board.');
-  }, [activeRecipe, clientSlug]);
+  }, [activeRecipe, clientSlug, currentYieldValue, isBulkMode, rootScaleFactor]);
 
   const updateRecipeMethodStep = useCallback((idx, value, bulk = false) => {
     const source = bulk ? (activeRecipe?.bulkMethod || []) : (activeRecipe?.method || []);
