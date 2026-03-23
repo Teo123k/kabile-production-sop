@@ -254,13 +254,53 @@ const inferIngredientCategory = (name = '', unit = '') => {
   if (/(salt|sugar|pepper|paprika|powder|spice|msg|seasoning|starch|flour)/.test(combined)) return 'dry';
   if (/(butter|oil|fat|sesame oil|chicken oil)/.test(combined)) return 'fat';
   if (/(chicken|beef|pork|tofu|fish|prawn|shrimp|meat)/.test(combined)) return 'protein';
+  if (/(miso paste|tomato paste|paste|roux)/.test(combined)) return 'base';
+  if (/(turmeric|coriander|cumin|garam masala|black pepper|white pepper|gochugaru|chili|chilli|curry powder)/.test(combined)) return 'spice';
   if (/(garlic|ginger|onion|scallion|shallot|chili|apple|carrot|cabbage|vegetable|veg)/.test(combined)) return 'aromatic';
   if (/(g|kg|ml|l)/.test(String(unit).toLowerCase())) return 'base';
   return 'other';
 };
 
+const inferCategoryFromSection = (section = '', name = '', unit = '') => {
+  const heading = String(section || '').toLowerCase().trim();
+  const ingredientGuess = inferIngredientCategory(name, unit);
+
+  if (!heading) return ingredientGuess;
+  if (/(fat|oil|butter)/.test(heading)) {
+    if (ingredientGuess === 'dry' || ingredientGuess === 'spice' || ingredientGuess === 'wet') return ingredientGuess;
+    return 'fat';
+  }
+  if (/(starch|flour|dry)/.test(heading)) {
+    if (ingredientGuess === 'fat') return 'fat';
+    return ingredientGuess === 'other' ? 'dry' : ingredientGuess;
+  }
+  if (/(spice|seasoning)/.test(heading)) {
+    return ingredientGuess === 'other' ? 'spice' : ingredientGuess;
+  }
+  if (/(wet|liquid|sauce|seasoning)/.test(heading)) {
+    if (ingredientGuess === 'dry' && /(salt|sugar)/i.test(name)) return 'dry';
+    return ingredientGuess === 'other' ? 'wet' : ingredientGuess;
+  }
+  if (/(paste|base)/.test(heading)) {
+    return ingredientGuess === 'other' ? 'base' : ingredientGuess;
+  }
+  return ingredientGuess;
+};
+
+const looksLikeSectionHeading = (line = '') => {
+  const text = String(line || '').trim();
+  if (!text) return false;
+  if (/\d/.test(text)) return false;
+  if (/:/.test(text)) return false;
+  if (text.split(/\s+/).length > 6) return false;
+  return /^[A-Z&/ +_-]+$/.test(text) || /^(ingredients?|ingredient weight)$/i.test(text);
+};
+
 const inferRecipeDraftMeta = (title = '') => {
   const lower = String(title || '').toLowerCase();
+  if (/(roux|stock|base mix|master brine|brine mix)/.test(lower)) {
+    return { portion_class: 'component', dishStyle: 'component', selectorGroup: 'Foundation Prep' };
+  }
   if (/(brine|marinade)/.test(lower)) {
     return { portion_class: 'marinade', dishStyle: 'marinade', selectorGroup: 'Marinade / Pre-Prep' };
   }
@@ -310,6 +350,37 @@ const parseRecipePasteInput = (rawInput = '') => {
   const baseYield = titleMatch ? Number(titleMatch[2]) : 1;
   const yieldUnit = titleMatch ? titleMatch[3].toLowerCase() : 'kg';
   const inferredMeta = inferRecipeDraftMeta(recipeTitle);
+  const ingredientLineRegex = /^(.+?)(?:\s*[:\-]\s*|\s+)(\d+(?:\.\d+)?)\s*(kg|g|ml|l|tbsp|tsp|pcs|pc|each)\b/i;
+  const parsedFromLines = [];
+  let currentSection = '';
+
+  lines.slice(1).forEach((line) => {
+    const cleanLine = String(line || '').trim();
+    if (!cleanLine) return;
+    if (/^ingredient\s*weight$/i.test(cleanLine) || /^ingredients?$/i.test(cleanLine)) return;
+    if (looksLikeSectionHeading(cleanLine)) {
+      currentSection = cleanLine;
+      return;
+    }
+
+    const lineMatch = cleanLine.match(ingredientLineRegex);
+    if (!lineMatch) return;
+
+    const name = String(lineMatch[1] || '').replace(/\s+/g, ' ').trim();
+    const qty = Number(lineMatch[2]);
+    const unit = String(lineMatch[3] || '').toLowerCase();
+    if (!name || !Number.isFinite(qty)) return;
+
+    const category = inferCategoryFromSection(currentSection, name, unit);
+    parsedFromLines.push({
+      name,
+      sku: slugifyRecipeId(name).toUpperCase() || 'NO-LINK',
+      qty,
+      unit,
+      category,
+      cat: category
+    });
+  });
 
   const titleSegment = titleMatch ? titleMatch[0] : firstLine;
   const remainingRaw = rawText.startsWith(titleSegment)
@@ -327,22 +398,24 @@ const parseRecipePasteInput = (rawInput = '') => {
     .trim();
 
   const ingredientRegex = /([A-Za-z][A-Za-z0-9/&,'().+\- ]*?)\s*(\d+(?:\.\d+)?)\s*(kg|g|ml|l|tbsp|tsp|pcs|pc|each)\b/gi;
-  const ingredients = [];
+  const ingredients = [...parsedFromLines];
   let match;
-  while ((match = ingredientRegex.exec(ingredientSource)) !== null) {
-    const name = String(match[1] || '').replace(/\s+/g, ' ').trim();
-    const qty = Number(match[2]);
-    const unit = String(match[3] || '').toLowerCase();
-    if (!name || !Number.isFinite(qty)) continue;
-    const category = inferIngredientCategory(name, unit);
-    ingredients.push({
-      name,
-      sku: slugifyRecipeId(name).toUpperCase() || 'NO-LINK',
-      qty,
-      unit,
-      category,
-      cat: category
-    });
+  if (ingredients.length === 0) {
+    while ((match = ingredientRegex.exec(ingredientSource)) !== null) {
+      const name = String(match[1] || '').replace(/\s+/g, ' ').trim().replace(/[:\-]+$/g, '');
+      const qty = Number(match[2]);
+      const unit = String(match[3] || '').toLowerCase();
+      if (!name || !Number.isFinite(qty)) continue;
+      const category = inferIngredientCategory(name, unit);
+      ingredients.push({
+        name,
+        sku: slugifyRecipeId(name).toUpperCase() || 'NO-LINK',
+        qty,
+        unit,
+        category,
+        cat: category
+      });
+    }
   }
 
   return {
@@ -1051,6 +1124,8 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
   const [showRecipeNotes, setShowRecipeNotes] = useState(false);
   const [expandedNoteIndex, setExpandedNoteIndex] = useState(null);
   const [lastDeletedNote, setLastDeletedNote] = useState(null);
+  const [draggedIngredientIndex, setDraggedIngredientIndex] = useState(null);
+  const [dragOverCategory, setDragOverCategory] = useState('');
 
   // HEURISTIC: Calculate the actual weight of the recipe in the DB
   // We use this as the scaling anchor in portion mode to fix messy metadata.
@@ -2254,6 +2329,29 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
           : (String(ing?.unit || '').trim() || 'g')
       };
     });
+
+    updateActiveRecipeLocal({ ingredients: updatedIngredients });
+  }, [activeRecipe?.ingredients, normalizeIngredientCategory, persistIngredientCategory]);
+
+  const moveIngredientToCategory = useCallback((ingredientIndex, nextCategory) => {
+    if (!activeRecipe?.ingredients || ingredientIndex === null || ingredientIndex === undefined) return;
+    const normalizedCategory = normalizeIngredientCategory(nextCategory);
+    const persistedCategory = persistIngredientCategory(normalizedCategory);
+    const updatedIngredients = [...activeRecipe.ingredients];
+    const currentIngredient = updatedIngredients[ingredientIndex];
+    if (!currentIngredient) return;
+
+    const currentCategory = normalizeIngredientCategory(currentIngredient.category || currentIngredient.cat || 'OTHER');
+    if (currentCategory === normalizedCategory) return;
+
+    updatedIngredients[ingredientIndex] = {
+      ...currentIngredient,
+      category: persistedCategory,
+      cat: persistedCategory,
+      unit: LIQUID_LIKE_CATEGORIES.has(normalizedCategory)
+        ? (/^(g|kg)$/i.test(String(currentIngredient?.unit || '')) ? 'ml' : (currentIngredient?.unit || 'ml'))
+        : (String(currentIngredient?.unit || '').trim() || 'g')
+    };
 
     updateActiveRecipeLocal({ ingredients: updatedIngredients });
   }, [activeRecipe?.ingredients, normalizeIngredientCategory, persistIngredientCategory]);
@@ -3782,7 +3880,25 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
                   {/* WRAPPED GRID CONTAINER */}
                   <div className={`grid grid-cols-1 p-4 ${isEditMode ? 'md:grid-cols-2 xl:grid-cols-3 gap-4' : 'md:grid-cols-2 lg:grid-cols-4 gap-6'}`}>
                     {ingredientCategoryEntries.map(([category, items]) => (
-                      <div key={category} className={`${isEditMode ? 'space-y-1.5' : 'space-y-2'}`}>
+                      <div
+                        key={category}
+                        className={`${isEditMode ? 'space-y-1.5' : 'space-y-2'} ${dragOverCategory === category ? 'ring-2 ring-app-accent/40 rounded-xl p-2 -m-2 bg-app-accent/5' : ''}`}
+                        onDragOver={isEditMode ? (e) => {
+                          e.preventDefault();
+                          if (draggedIngredientIndex !== null) setDragOverCategory(category);
+                        } : undefined}
+                        onDragLeave={isEditMode ? () => {
+                          if (dragOverCategory === category) setDragOverCategory('');
+                        } : undefined}
+                        onDrop={isEditMode ? (e) => {
+                          e.preventDefault();
+                          const nextIndex = Number(e.dataTransfer.getData('text/plain'));
+                          const ingredientIndex = Number.isFinite(nextIndex) ? nextIndex : draggedIngredientIndex;
+                          moveIngredientToCategory(ingredientIndex, category);
+                          setDraggedIngredientIndex(null);
+                          setDragOverCategory('');
+                        } : undefined}
+                      >
                         <div className="flex items-center justify-between gap-2 mb-1">
                           {isEditMode && editingCategoryHeader === category ? (
                             <input
@@ -3858,11 +3974,21 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
                               <div
                                 data-testid={`ingredient-row-${toTestId(ing.sku || ing.name)}`}
                                 key={idx}
+                                draggable={isEditMode}
+                                onDragStart={isEditMode ? (e) => {
+                                  setDraggedIngredientIndex(idx);
+                                  e.dataTransfer.effectAllowed = 'move';
+                                  e.dataTransfer.setData('text/plain', String(idx));
+                                } : undefined}
+                                onDragEnd={isEditMode ? () => {
+                                  setDraggedIngredientIndex(null);
+                                  setDragOverCategory('');
+                                } : undefined}
                                 onClick={() => {
                                   if (!isMain || isEditing) return;
                                   setCheckedItems({ ...checkedItems, [idx]: !isChecked });
                                 }}
-                                className={`flex items-center justify-between p-2 rounded border transition-all ${isMain ? 'border-l-4 border-l-app-accent ring-1 ring-app-accent/10' : ''} ${isChecked ? 'bg-app-success/5 border-app-success/20 opacity-40' : 'bg-app-bg border-app-border'} ${isMain && !isChecked ? 'hover:border-app-accent' : ''}`}
+                                className={`flex items-center justify-between p-2 rounded border transition-all ${isMain ? 'border-l-4 border-l-app-accent ring-1 ring-app-accent/10' : ''} ${isChecked ? 'bg-app-success/5 border-app-success/20 opacity-40' : 'bg-app-bg border-app-border'} ${isMain && !isChecked ? 'hover:border-app-accent' : ''} ${isEditMode ? 'cursor-grab active:cursor-grabbing' : ''} ${draggedIngredientIndex === idx ? 'opacity-50' : ''}`}
                               >
                                 <div className="flex items-center gap-3 min-w-0 flex-1">
                                   <div className="shrink-0">
