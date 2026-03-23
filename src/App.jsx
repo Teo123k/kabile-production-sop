@@ -1126,6 +1126,9 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
   const [lastDeletedNote, setLastDeletedNote] = useState(null);
   const [draggedIngredientIndex, setDraggedIngredientIndex] = useState(null);
   const [dragOverCategory, setDragOverCategory] = useState('');
+  const recipeMenuRef = React.useRef(null);
+  const scalerExportRef = React.useRef(null);
+  const marketExportRef = React.useRef(null);
 
   // HEURISTIC: Calculate the actual weight of the recipe in the DB
   // We use this as the scaling anchor in portion mode to fix messy metadata.
@@ -1627,6 +1630,28 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
       setScalerExportRecipeIds([activeRecipe.id]);
     }
   }, [activeRecipe?.id, scalerExportRecipeIds.length]);
+
+  useEffect(() => {
+    const handleOutsidePointer = (event) => {
+      const target = event.target;
+      if (isRecipeMenuOpen && recipeMenuRef.current && !recipeMenuRef.current.contains(target)) {
+        setIsRecipeMenuOpen(false);
+      }
+      if (isScalerExportOpen && scalerExportRef.current && !scalerExportRef.current.contains(target)) {
+        setIsScalerExportOpen(false);
+      }
+      if (isMarketExportOpen && marketExportRef.current && !marketExportRef.current.contains(target)) {
+        setIsMarketExportOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsidePointer);
+    document.addEventListener('touchstart', handleOutsidePointer);
+    return () => {
+      document.removeEventListener('mousedown', handleOutsidePointer);
+      document.removeEventListener('touchstart', handleOutsidePointer);
+    };
+  }, [isMarketExportOpen, isRecipeMenuOpen, isScalerExportOpen]);
 
   // STEP 2 — INTENT-AWARE SCALING CONTRACT
   const hasIntent = !!planIntent[activeRecipe?.id];
@@ -3309,7 +3334,7 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
                     </div>
                   )}
                   {!isEditMode && !showDeleted && filteredRecipesList.length > 0 && (
-                    <div className="relative">
+                    <div className="relative" ref={scalerExportRef}>
                       <button
                         onClick={() => setIsScalerExportOpen((prev) => !prev)}
                         className="flex items-center gap-1 px-2.5 py-1.5 bg-app-bg text-app-muted hover:border-app-accent hover:text-app-accent border border-app-border rounded-lg text-[9px] font-black uppercase transition-all"
@@ -3408,7 +3433,7 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
 		                              placeholder="Recipe Name"
 		                            />
 		                          ) : (
-			                            <div className="relative z-40">
+			                            <div className="relative z-40" ref={recipeMenuRef}>
 			                              <button
                                     data-testid="recipe-title-button"
 			                                onClick={() => setIsRecipeMenuOpen(prev => !prev)}
@@ -4387,7 +4412,7 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
                 <h2 className="font-bold uppercase text-xs tracking-widest flex items-center gap-2">
                   <ShoppingCart size={18} /> Aggregated Order
                 </h2>
-                <div className="relative shrink-0">
+                <div className="relative shrink-0" ref={marketExportRef}>
                   <button
                     onClick={() => setIsMarketExportOpen((prev) => !prev)}
                     className="px-4 py-2 hover:bg-app-bg/20 border border-app-bg/30 text-[10px] font-black uppercase rounded-xl transition-all flex items-center gap-2 text-app-bg"
