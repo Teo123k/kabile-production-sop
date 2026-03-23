@@ -2295,7 +2295,6 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
 
   const handleEnterEditMode = useCallback(() => {
     if (!canEdit) return;
-    handleDefaultAll();
     setEditingIngId(null);
     setEditingCategoryHeader(null);
     setEditingCategoryValue('');
@@ -2304,7 +2303,7 @@ const SopMain = ({ canEdit = false, onAdminUnlock = null, onAdminLock = null, ro
     setShowDeleted(false);
     setIsScalerExportOpen(false);
     setIsEditMode(true);
-  }, [canEdit, handleDefaultAll]);
+  }, [canEdit]);
 
   const activeDefaultIntent = activeRecipe ? getDefaultIntentForRecipe(activeRecipe) : { val: 1, mode: 'scale' };
 
